@@ -1,0 +1,12 @@
+# 環境変数
+.env
+.env.local
+.env.*.local
+
+#　Google認証ファイル
+*.json
+webscraping-no1-af4fe25d3ad4.json
+.package-lock.json
+
+# 依存関係
+node_modules/
