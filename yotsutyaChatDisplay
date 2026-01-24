@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: transparent;
+        }
+        
+        /* アイコン+吹き出しのコンテナ */
+        .comment-container {
+            position: absolute;
+            display: flex;
+            align-items: center;
+            animation: fallAndRoll 1s ease-out;
+        }
+        
+        /* アイコンとユーザー名をまとめる部分 */
+        .avatar-wrapper {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-right: 10px;
+        }
+        
+        /* アイコン画像 */
+        .avatar {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            border: 3px solid #9147ff;
+        }
+        
+        /* ユーザー名 */
+        .username {
+            font-size: 12px;
+            color: #9147ff;
+            font-weight: bold;
+            margin-top: 5px;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
+        }
+        
+        /* 吹き出し */
+        .speech-bubble {
+            background: white;
+            padding: 10px 15px;
+            border-radius: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            max-width: 400px;
+            position: relative;
+            font-size: 18px;
+            color: #333;
+        }
+        
+        /* 吹き出しの三角形 */
+        .speech-bubble::before {
+            content: '';
+            position: absolute;
+            left: -10px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 0;
+            height: 0;
+            border-top: 10px solid transparent;
+            border-bottom: 10px solid transparent;
+            border-right: 10px solid white;
+        }
+        
+        /* 転がり落ちるアニメーション */
+        @keyframes fallAndRoll {
+            0% {
+                top: -100px;
+                transform: rotate(0deg);
+            }
+            60% {
+                top: 200px;
+                transform: rotate(360deg);
+            }
+            100% {
+                top: 200px;
+                transform: rotate(360deg);
+            }
+        }
+        
+        /* フェードアウト */
+        .fade-out {
+            animation: fadeOut 0.5s ease-out forwards;
+        }
+        
+        @keyframes fadeOut {
+            to {
+                opacity: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <script>
+        // Twitchに接続するための設定
+        const CHANNEL_NAME = 'あなたのチャンネル名';  // ←ここを変更！
+        
+        // Twitchチャットに接続
+        const ws = new WebSocket('wss://irc-ws.chat.twitch.tv:443');
+        
+        ws.onopen = () => {
+            // Twitchサーバーにログイン（匿名接続）
+            ws.send('NICK justinfan12345');
+            ws.send('JOIN #' + CHANNEL_NAME.toLowerCase());
+            console.log('Twitchチャットに接続しました！');
+        };
+        
+        ws.onmessage = (event) => {
+            const message = event.data;
+            
+            // コメントメッセージを解析
+            if (message.includes('PRIVMSG')) {
+                const username = message.split('!')[0].substring(1);
+                const comment = message.split('PRIVMSG')[1].split(':').slice(1).join(':').trim();
+                
+                // アイコンとコメントを表示
+                displayComment(username, comment);
+            }
+            
+            // Twitchサーバーからのping応答
+            if (message.startsWith('PING')) {
+                ws.send('PONG :tmi.twitch.tv');
+            }
+        };
+        
+        // コメント表示関数
+        function displayComment(username, comment) {
+            // コンテナを作成
+            const container = document.createElement('div');
+            container.className = 'comment-container';
+            container.style.left = Math.random() * (window.innerWidth - 500) + 'px';
+            
+            // アイコン+ユーザー名のラッパー
+            const avatarWrapper = document.createElement('div');
+            avatarWrapper.className = 'avatar-wrapper';
+            
+            // アイコン画像
+            const avatar = document.createElement('img');
+            avatar.className = 'avatar';
+            avatar.src = `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`;
+            
+            // ユーザー名
+            const usernameText = document.createElement('div');
+            usernameText.className = 'username';
+            usernameText.textContent = username;
+            
+            // アイコンとユーザー名を組み合わせ
+            avatarWrapper.appendChild(avatar);
+            avatarWrapper.appendChild(usernameText);
+            
+            // 吹き出し
+            const bubble = document.createElement('div');
+            bubble.className = 'speech-bubble';
+            bubble.textContent = comment;
+            
+            container.appendChild(avatarWrapper);
+            container.appendChild(bubble);
+            document.body.appendChild(container);
+            
+            // 2秒後にフェードアウトして削除
+            setTimeout(() => {
+                container.classList.add('fade-out');
+                setTimeout(() => container.remove(), 500);
+            }, 2000);
+        }
+    </script>
+</body>
+</html>
