@@ -30,7 +30,7 @@
         .avatar {
             width: 60px;
             height: 60px;
-            border-radius: 50%;
+            border-radius: 50%;  /* ←これで丸くなってます! */
             border: 3px solid #9147ff;
         }
         
@@ -53,6 +53,13 @@
             position: relative;
             font-size: 18px;
             color: #333;
+            opacity: 0;  /* ←最初は非表示! */
+            transition: opacity 0.3s ease-in;  /* ←フワッと表示するため */
+        }
+        
+        /* 吹き出しを表示するクラス */
+        .speech-bubble.show {
+            opacity: 1;  /* ←表示状態にする */
         }
         
         /* 吹き出しの三角形 */
@@ -69,18 +76,18 @@
             border-right: 10px solid white;
         }
         
-        /* 転がり落ちるアニメーション */
+        /* 転がり落ちるアニメーション(最下部まで) */
         @keyframes fallAndRoll {
             0% {
                 top: -100px;
                 transform: rotate(0deg);
             }
             60% {
-                top: 200px;
+                bottom: 20px;  /* ←画面下部に変更! */
                 transform: rotate(360deg);
             }
             100% {
-                top: 200px;
+                bottom: 20px;  /* ←ここで止まる */
                 transform: rotate(360deg);
             }
         }
@@ -155,7 +162,7 @@
             avatarWrapper.appendChild(avatar);
             avatarWrapper.appendChild(usernameText);
             
-            // 吹き出し
+            // 吹き出し(最初は非表示)
             const bubble = document.createElement('div');
             bubble.className = 'speech-bubble';
             bubble.textContent = comment;
@@ -164,11 +171,26 @@
             container.appendChild(bubble);
             document.body.appendChild(container);
             
-            // 2秒後にフェードアウトして削除
+            // タイムライン:
+            // 0秒: アイコンが転がり落ちる
+            // 1秒: 転がり終わる → 吹き出し表示
+            // 3秒: 吹き出しを消す(1秒 + 2秒)
+            // 5秒: アイコンも消す(1秒 + 2秒 + 2秒)
+            
             setTimeout(() => {
-                container.classList.add('fade-out');
-                setTimeout(() => container.remove(), 500);
-            }, 2000);
+                // 1秒後: 転がり終わったら吹き出し表示
+                bubble.classList.add('show');
+                
+                setTimeout(() => {
+                    // さらに2秒後: 吹き出しを消す
+                    bubble.classList.add('fade-out');
+                    
+                    setTimeout(() => {
+                        // さらに2秒後: アイコン全体を削除
+                        container.remove();
+                    }, 2000);  // ←吹き出しが消えてから2秒後
+                }, 2000);  // ←吹き出し表示から2秒後
+            }, 1000);  // ←転がり終わるまで1秒
         }
     </script>
 </body>
