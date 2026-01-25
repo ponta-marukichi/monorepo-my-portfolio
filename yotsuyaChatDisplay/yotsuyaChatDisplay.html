@@ -76,10 +76,10 @@
             border-right: 10px solid white;
         }
         
-        /* 自重で落ちるアニメーション(下から5/16の位置から開始 = 2.5倍の距離) */
+        /* 自重で落ちるアニメーション(下から1/7の位置から開始) */
         @keyframes fallAndRoll {
             0% {
-                top: calc(100vh - 100vh * 5 / 16 - 80px);  /* 画面の下から5/16の位置(1/8の2.5倍) */
+                top: calc(100vh - 100vh / 7 - 80px);  /* 画面の下から1/7の位置 */
                 transform: rotate(0deg);
             }
             60% {
