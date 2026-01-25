@@ -15,7 +15,7 @@
             position: absolute;
             display: flex;
             align-items: center;
-            animation: fallAndRoll 1.2s cubic-bezier(0.33, 0, 1, 1) forwards;
+            animation: fallAndRoll 3s cubic-bezier(0.33, 0, 1, 1) forwards;
         }
         
         /* アイコンとユーザー名をまとめる部分 */
@@ -76,10 +76,10 @@
             border-right: 10px solid white;
         }
         
-        /* 自重で落ちるアニメーション(下から1/8の位置から開始) */
+        /* 自重で落ちるアニメーション(下から5/16の位置から開始 = 2.5倍の距離) */
         @keyframes fallAndRoll {
             0% {
-                top: calc(100vh - 100vh / 8 - 80px);  /* 画面の下から1/8の位置 */
+                top: calc(100vh - 100vh * 5 / 16 - 80px);  /* 画面の下から5/16の位置(1/8の2.5倍) */
                 transform: rotate(0deg);
             }
             60% {
@@ -181,12 +181,12 @@
             
             // タイムライン:
             // 0秒: アイコンが落ちる
-            // 1.2秒: 落ち終わる → 吹き出し表示
-            // 3.2秒: 吹き出しを消す(1.2秒 + 2秒)
-            // 5.2秒: アイコンも消す(1.2秒 + 2秒 + 2秒)
+            // 3秒: 落ち終わる → 吹き出し表示
+            // 5秒: 吹き出しを消す(3秒 + 2秒)
+            // 7秒: アイコンも消す(3秒 + 2秒 + 2秒)
 
             setTimeout(() => {
-                // 1.2秒後: 落ち終わったら吹き出し表示
+                // 3秒後: 落ち終わったら吹き出し表示
                 bubble.classList.add('show');
 
                 setTimeout(() => {
@@ -198,7 +198,7 @@
                         container.remove();
                     }, 2000);  // ←吹き出しが消えてから2秒後
                 }, 2000);  // ←吹き出し表示から2秒後
-            }, 1200);  // ←落ち終わるまで1.2秒
+            }, 3000);  // ←落ち終わるまで3秒
         }
     </script>
 </body>
