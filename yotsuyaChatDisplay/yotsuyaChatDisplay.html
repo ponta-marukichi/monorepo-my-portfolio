@@ -15,7 +15,7 @@
             position: absolute;
             display: flex;
             align-items: center;
-            animation: fallAndRoll 3s cubic-bezier(0.33, 0, 1, 1) forwards;
+            animation: fallAndRoll 1.2s cubic-bezier(0.33, 0, 1, 1) forwards;
         }
         
         /* アイコンとユーザー名をまとめる部分 */
@@ -181,12 +181,12 @@
             
             // タイムライン:
             // 0秒: アイコンが落ちる
-            // 3秒: 落ち終わる → 吹き出し表示
-            // 5秒: 吹き出しを消す(3秒 + 2秒)
-            // 7秒: アイコンも消す(3秒 + 2秒 + 2秒)
+            // 1.2秒: 落ち終わる → 吹き出し表示
+            // 3.2秒: 吹き出しを消す(1.2秒 + 2秒)
+            // 5.2秒: アイコンも消す(1.2秒 + 2秒 + 2秒)
 
             setTimeout(() => {
-                // 3秒後: 落ち終わったら吹き出し表示
+                // 1.2秒後: 落ち終わったら吹き出し表示
                 bubble.classList.add('show');
 
                 setTimeout(() => {
@@ -198,7 +198,7 @@
                         container.remove();
                     }, 2000);  // ←吹き出しが消えてから2秒後
                 }, 2000);  // ←吹き出し表示から2秒後
-            }, 3000);  // ←落ち終わるまで3秒
+            }, 1200);  // ←落ち終わるまで1.2秒
         }
     </script>
 </body>
