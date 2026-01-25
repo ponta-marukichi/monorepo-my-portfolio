@@ -15,7 +15,7 @@
             position: absolute;
             display: flex;
             align-items: center;
-            animation: fallAndRoll 1s ease-out forwards;
+            animation: fallAndRoll 0.5s cubic-bezier(0.33, 0, 1, 1) forwards;
         }
         
         /* アイコンとユーザー名をまとめる部分 */
@@ -76,31 +76,27 @@
             border-right: 10px solid white;
         }
         
-        /* 転がり落ちるアニメーション(最下部まで) */
+        /* 自重で落ちるアニメーション(下から1/8の位置から開始) */
         @keyframes fallAndRoll {
             0% {
-                top: -100px;
+                top: calc(100vh - 100vh / 8 - 80px);  /* 画面の下から1/8の位置 */
                 transform: rotate(0deg);
             }
-            50% {
-                top: calc(100vh - 100px);
-                transform: rotate(360deg);
+            60% {
+                top: calc(100vh - 100px);  /* 画面最下部に落ちる */
+                transform: rotate(5deg);
             }
-            65% {
-                top: calc(100vh - 130px);  /* バウンド上 */
-                transform: rotate(400deg);
-            }
-            80% {
-                top: calc(100vh - 100px);
-                transform: rotate(440deg);
+            75% {
+                top: calc(100vh - 115px);  /* 小さくバウンド */
+                transform: rotate(-3deg);
             }
             90% {
-                top: calc(100vh - 110px);  /* 小さいバウンド */
-                transform: rotate(450deg);
+                top: calc(100vh - 100px);
+                transform: rotate(2deg);
             }
             100% {
                 top: calc(100vh - 100px);  /* 最終位置 */
-                transform: rotate(360deg);
+                transform: rotate(0deg);
             }
         }
         
@@ -184,25 +180,25 @@
             document.body.appendChild(container);
             
             // タイムライン:
-            // 0秒: アイコンが転がり落ちる
-            // 1秒: 転がり終わる → 吹き出し表示
-            // 3秒: 吹き出しを消す(1秒 + 2秒)
-            // 5秒: アイコンも消す(1秒 + 2秒 + 2秒)
-            
+            // 0秒: アイコンが落ちる
+            // 0.5秒: 落ち終わる → 吹き出し表示
+            // 2.5秒: 吹き出しを消す(0.5秒 + 2秒)
+            // 4.5秒: アイコンも消す(0.5秒 + 2秒 + 2秒)
+
             setTimeout(() => {
-                // 1秒後: 転がり終わったら吹き出し表示
+                // 0.5秒後: 落ち終わったら吹き出し表示
                 bubble.classList.add('show');
-                
+
                 setTimeout(() => {
                     // さらに2秒後: 吹き出しを消す
                     bubble.classList.add('fade-out');
-                    
+
                     setTimeout(() => {
                         // さらに2秒後: アイコン全体を削除
                         container.remove();
                     }, 2000);  // ←吹き出しが消えてから2秒後
                 }, 2000);  // ←吹き出し表示から2秒後
-            }, 1000);  // ←転がり終わるまで1秒
+            }, 500);  // ←落ち終わるまで0.5秒
         }
     </script>
 </body>
