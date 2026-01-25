@@ -15,7 +15,7 @@
             position: absolute;
             display: flex;
             align-items: center;
-            animation: fallAndRoll 1s ease-out;
+            animation: fallAndRoll 1s ease-out forwards;
         }
         
         /* アイコンとユーザー名をまとめる部分 */
@@ -82,12 +82,24 @@
                 top: -100px;
                 transform: rotate(0deg);
             }
-            60% {
-                bottom: 20px;  /* ←画面下部に変更! */
+            50% {
+                top: calc(100vh - 100px);
                 transform: rotate(360deg);
             }
+            65% {
+                top: calc(100vh - 130px);  /* バウンド上 */
+                transform: rotate(400deg);
+            }
+            80% {
+                top: calc(100vh - 100px);
+                transform: rotate(440deg);
+            }
+            90% {
+                top: calc(100vh - 110px);  /* 小さいバウンド */
+                transform: rotate(450deg);
+            }
             100% {
-                bottom: 20px;  /* ←ここで止まる */
+                top: calc(100vh - 100px);  /* 最終位置 */
                 transform: rotate(360deg);
             }
         }
@@ -151,7 +163,7 @@
             // アイコン画像
             const avatar = document.createElement('img');
             avatar.className = 'avatar';
-            avatar.src = `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`;
+            avatar.src = `https://decapi.me/twitch/avatar/${username}`;
             
             // ユーザー名
             const usernameText = document.createElement('div');
