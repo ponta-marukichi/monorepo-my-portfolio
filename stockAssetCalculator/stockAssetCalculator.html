@@ -532,19 +532,28 @@
     }
 
     async function fetchUsdJpyRate() {
-        const data = await fetchJson('https://api.exchangerate-api.com/v4/latest/USD');
-        const jpy = data?.rates?.JPY;
-        if (typeof jpy !== 'number') throw new Error('レート取得に失敗しました');
-        return jpy;
+        // 為替市場のライブレート（Yahoo Financeの USD/JPY ティッカー）を優先して取得する
+        try {
+            const quote = await fetchQuote('JPY=X');
+            return { rate: quote.price, isPreviousClose: quote.isPreviousClose };
+        } catch (yahooErr) {
+            const data = await fetchJson('https://api.exchangerate-api.com/v4/latest/USD');
+            const jpy = data?.rates?.JPY;
+            if (typeof jpy !== 'number') throw new Error('レート取得に失敗しました');
+            return { rate: jpy, isPreviousClose: false };
+        }
     }
 
     async function refreshRate() {
         if (rateIsManual) return;
         rateStatusEl.textContent = '取得中...';
         try {
-            usdJpyRate = await fetchUsdJpyRate();
+            const { rate, isPreviousClose } = await fetchUsdJpyRate();
+            usdJpyRate = rate;
             rateValueEl.textContent = `1 USD = ${usdJpyRate.toFixed(2)} 円`;
-            rateStatusEl.textContent = `更新: ${new Date().toLocaleTimeString('ja-JP')}`;
+            rateStatusEl.textContent = isPreviousClose
+                ? `更新: ${new Date().toLocaleTimeString('ja-JP')}（為替市場休止中のため前回終値）`
+                : `更新: ${new Date().toLocaleTimeString('ja-JP')}`;
             localStorage.setItem(RATE_CACHE_KEY, JSON.stringify({ rate: usdJpyRate, ts: Date.now() }));
         } catch (err) {
             rateStatusEl.textContent = '取得失敗。下の欄に手動入力してください。';
