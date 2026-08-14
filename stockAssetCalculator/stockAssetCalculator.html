@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>日本株・米国株 資産計算</title>
+<style>
+    :root {
+        --bg: #0f172a;
+        --panel: #1e293b;
+        --panel-alt: #273449;
+        --border: #334155;
+        --text: #e2e8f0;
+        --text-dim: #94a3b8;
+        --accent: #38bdf8;
+        --accent-strong: #0ea5e9;
+        --green: #4ade80;
+        --red: #f87171;
+        --yellow: #facc15;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+        margin: 0;
+        padding: 24px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", -apple-system, BlinkMacSystemFont, sans-serif;
+        line-height: 1.5;
+    }
+
+    .container {
+        max-width: 960px;
+        margin: 0 auto;
+    }
+
+    h1 {
+        font-size: 22px;
+        margin: 0 0 4px;
+    }
+
+    .subtitle {
+        color: var(--text-dim);
+        font-size: 13px;
+        margin-bottom: 20px;
+    }
+
+    .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 18px;
+        margin-bottom: 18px;
+    }
+
+    .panel h2 {
+        font-size: 15px;
+        margin: 0 0 12px;
+        color: var(--text-dim);
+        font-weight: 600;
+    }
+
+    .rate-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+
+    .rate-row .rate-value {
+        font-size: 18px;
+        font-weight: bold;
+        color: var(--accent);
+    }
+
+    .rate-row input[type="number"] {
+        width: 110px;
+    }
+
+    .rate-status {
+        font-size: 12px;
+        color: var(--text-dim);
+    }
+
+    form.add-form {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: flex-end;
+    }
+
+    .field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .field label {
+        font-size: 12px;
+        color: var(--text-dim);
+    }
+
+    select, input[type="text"], input[type="number"] {
+        background: var(--panel-alt);
+        border: 1px solid var(--border);
+        color: var(--text);
+        border-radius: 6px;
+        padding: 8px 10px;
+        font-size: 14px;
+    }
+
+    input[type="text"] { width: 130px; }
+    input[type="number"] { width: 100px; }
+
+    button {
+        background: var(--accent-strong);
+        color: #04202e;
+        border: none;
+        border-radius: 6px;
+        padding: 9px 16px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+    }
+
+    button:hover { background: var(--accent); }
+
+    button.secondary {
+        background: transparent;
+        color: var(--accent);
+        border: 1px solid var(--accent-strong);
+    }
+
+    button.secondary:hover { background: rgba(56, 189, 248, 0.1); }
+
+    button.danger {
+        background: transparent;
+        color: var(--red);
+        border: 1px solid var(--red);
+        padding: 5px 10px;
+        font-size: 12px;
+    }
+
+    button.danger:hover { background: rgba(248, 113, 113, 0.1); }
+
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+    }
+
+    th, td {
+        text-align: right;
+        padding: 8px 6px;
+        border-bottom: 1px solid var(--border);
+        white-space: nowrap;
+    }
+
+    th:first-child, td:first-child,
+    th:nth-child(2), td:nth-child(2) {
+        text-align: left;
+    }
+
+    th {
+        color: var(--text-dim);
+        font-weight: 600;
+        font-size: 12px;
+    }
+
+    td input[type="number"] {
+        width: 90px;
+        text-align: right;
+    }
+
+    .price-cell { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+    .price-note { font-size: 10px; color: var(--text-dim); }
+    .price-note.manual { color: var(--yellow); }
+    .price-note.error { color: var(--red); }
+
+    .market-badge {
+        display: inline-block;
+        font-size: 11px;
+        font-weight: 700;
+        padding: 2px 6px;
+        border-radius: 4px;
+        margin-right: 6px;
+    }
+
+    .market-badge.JP { background: rgba(74, 222, 128, 0.15); color: var(--green); }
+    .market-badge.US { background: rgba(56, 189, 248, 0.15); color: var(--accent); }
+
+    .empty-row td {
+        text-align: center;
+        color: var(--text-dim);
+        padding: 24px;
+    }
+
+    .totals {
+        display: flex;
+        gap: 24px;
+        flex-wrap: wrap;
+        margin-top: 16px;
+        padding-top: 16px;
+        border-top: 1px solid var(--border);
+    }
+
+    .totals .item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .totals .item .label {
+        font-size: 12px;
+        color: var(--text-dim);
+    }
+
+    .totals .item .value {
+        font-size: 20px;
+        font-weight: bold;
+    }
+
+    .totals .item.grand .value {
+        color: var(--accent);
+        font-size: 26px;
+    }
+
+    .toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+
+    .hint {
+        font-size: 12px;
+        color: var(--text-dim);
+        margin-top: 10px;
+    }
+</style>
+</head>
+<body>
+<div class="container">
+    <h1>日本株・米国株 資産計算</h1>
+    <div class="subtitle">銘柄コードと保有株数を入力すると、現在の株価と為替レートから評価額を円で計算します。</div>
+
+    <div class="panel">
+        <h2>USD/JPY 為替レート</h2>
+        <div class="rate-row">
+            <span class="rate-value" id="rateValue">-</span>
+            <input type="number" id="rateOverride" step="0.01" placeholder="手動入力">
+            <button type="button" class="secondary" id="rateRefreshBtn">レート再取得</button>
+            <span class="rate-status" id="rateStatus"></span>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>銘柄を追加</h2>
+        <form class="add-form" id="addForm">
+            <div class="field">
+                <label for="marketSelect">市場</label>
+                <select id="marketSelect">
+                    <option value="JP">日本株</option>
+                    <option value="US">米国株</option>
+                </select>
+            </div>
+            <div class="field">
+                <label for="codeInput">銘柄コード</label>
+                <input type="text" id="codeInput" placeholder="例: 7203 / AAPL" required>
+            </div>
+            <div class="field">
+                <label for="qtyInput">保有株数</label>
+                <input type="number" id="qtyInput" min="1" step="1" value="100" required>
+            </div>
+            <button type="submit">追加</button>
+        </form>
+        <div class="hint">日本株はコードのみでOKです（内部で「.T」を付与します）。米国株はティッカーをそのまま入力してください。</div>
+    </div>
+
+    <div class="panel">
+        <div class="toolbar">
+            <h2 style="margin:0;">保有銘柄</h2>
+            <button type="button" class="secondary" id="refreshAllBtn">すべての株価を再取得</button>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>市場</th>
+                    <th>コード</th>
+                    <th>保有株数</th>
+                    <th>現在値</th>
+                    <th>評価額（円）</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody id="holdingsBody">
+                <tr class="empty-row"><td colspan="6">まだ銘柄が登録されていません</td></tr>
+            </tbody>
+        </table>
+
+        <div class="totals">
+            <div class="item">
+                <div class="label">日本株 評価額</div>
+                <div class="value" id="totalJP">¥0</div>
+            </div>
+            <div class="item">
+                <div class="label">米国株 評価額（円換算）</div>
+                <div class="value" id="totalUS">¥0</div>
+            </div>
+            <div class="item grand">
+                <div class="label">総資産</div>
+                <div class="value" id="totalGrand">¥0</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(() => {
+    'use strict';
+
+    const STORAGE_KEY = 'stockAssetCalculator.holdings.v1';
+    const RATE_CACHE_KEY = 'stockAssetCalculator.rate.v1';
+
+    /** @type {{id:string, market:'JP'|'US', code:string, quantity:number, price:number|null, currency:string, manual:boolean, error:string|null}[]} */
+    let holdings = loadHoldings();
+    let usdJpyRate = null;
+    let rateIsManual = false;
+
+    const holdingsBody = document.getElementById('holdingsBody');
+    const addForm = document.getElementById('addForm');
+    const rateValueEl = document.getElementById('rateValue');
+    const rateStatusEl = document.getElementById('rateStatus');
+    const rateOverrideEl = document.getElementById('rateOverride');
+    const totalJPEl = document.getElementById('totalJP');
+    const totalUSEl = document.getElementById('totalUS');
+    const totalGrandEl = document.getElementById('totalGrand');
+
+    function loadHoldings() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            return raw ? JSON.parse(raw) : [];
+        } catch {
+            return [];
+        }
+    }
+
+    function saveHoldings() {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(holdings));
+    }
+
+    function formatYen(n) {
+        return '¥' + Math.round(n).toLocaleString('ja-JP');
+    }
+
+    function normalizeSymbol(market, code) {
+        const trimmed = code.trim().toUpperCase();
+        if (market === 'JP') {
+            return trimmed.includes('.') ? trimmed : `${trimmed}.T`;
+        }
+        return trimmed;
+    }
+
+    async function fetchJson(url) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+    }
+
+    async function fetchQuote(symbol) {
+        const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`;
+        try {
+            const data = await fetchJson(yahooUrl);
+            const result = data?.chart?.result?.[0];
+            const price = result?.meta?.regularMarketPrice;
+            const currency = result?.meta?.currency;
+            if (typeof price === 'number') return { price, currency: currency || null };
+            throw new Error('価格データなし');
+        } catch (directErr) {
+            try {
+                const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(yahooUrl)}`;
+                const data = await fetchJson(proxyUrl);
+                const result = data?.chart?.result?.[0];
+                const price = result?.meta?.regularMarketPrice;
+                const currency = result?.meta?.currency;
+                if (typeof price === 'number') return { price, currency: currency || null };
+                throw new Error('価格データなし');
+            } catch (proxyErr) {
+                throw new Error('株価取得に失敗しました');
+            }
+        }
+    }
+
+    async function fetchUsdJpyRate() {
+        const data = await fetchJson('https://api.exchangerate-api.com/v4/latest/USD');
+        const jpy = data?.rates?.JPY;
+        if (typeof jpy !== 'number') throw new Error('レート取得に失敗しました');
+        return jpy;
+    }
+
+    async function refreshRate() {
+        if (rateIsManual) return;
+        rateStatusEl.textContent = '取得中...';
+        try {
+            usdJpyRate = await fetchUsdJpyRate();
+            rateValueEl.textContent = `1 USD = ${usdJpyRate.toFixed(2)} 円`;
+            rateStatusEl.textContent = `更新: ${new Date().toLocaleTimeString('ja-JP')}`;
+            localStorage.setItem(RATE_CACHE_KEY, JSON.stringify({ rate: usdJpyRate, ts: Date.now() }));
+        } catch (err) {
+            rateStatusEl.textContent = '取得失敗。下の欄に手動入力してください。';
+            const cached = loadCachedRate();
+            if (cached && usdJpyRate === null) {
+                usdJpyRate = cached.rate;
+                rateValueEl.textContent = `1 USD = ${usdJpyRate.toFixed(2)} 円（キャッシュ）`;
+            }
+        }
+        render();
+    }
+
+    function loadCachedRate() {
+        try {
+            const raw = localStorage.getItem(RATE_CACHE_KEY);
+            return raw ? JSON.parse(raw) : null;
+        } catch {
+            return null;
+        }
+    }
+
+    rateOverrideEl.addEventListener('change', () => {
+        const v = parseFloat(rateOverrideEl.value);
+        if (!isNaN(v) && v > 0) {
+            usdJpyRate = v;
+            rateIsManual = true;
+            rateValueEl.textContent = `1 USD = ${usdJpyRate.toFixed(2)} 円（手動）`;
+            rateStatusEl.textContent = '手動入力を使用中';
+            render();
+        } else if (rateOverrideEl.value.trim() === '') {
+            rateIsManual = false;
+            refreshRate();
+        }
+    });
+
+    document.getElementById('rateRefreshBtn').addEventListener('click', () => {
+        rateIsManual = false;
+        rateOverrideEl.value = '';
+        refreshRate();
+    });
+
+    async function addHolding(market, code, quantity) {
+        const holding = {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            market,
+            code: code.trim().toUpperCase(),
+            quantity,
+            price: null,
+            currency: market === 'JP' ? 'JPY' : 'USD',
+            manual: false,
+            error: null,
+        };
+        holdings.push(holding);
+        saveHoldings();
+        render();
+        await refreshHolding(holding.id);
+    }
+
+    async function refreshHolding(id) {
+        const holding = holdings.find(h => h.id === id);
+        if (!holding) return;
+        try {
+            const symbol = normalizeSymbol(holding.market, holding.code);
+            const { price, currency } = await fetchQuote(symbol);
+            holding.price = price;
+            holding.currency = currency || holding.currency;
+            holding.manual = false;
+            holding.error = null;
+        } catch (err) {
+            holding.error = err.message || '取得失敗';
+        }
+        saveHoldings();
+        render();
+    }
+
+    async function refreshAll() {
+        await Promise.all(holdings.map(h => refreshHolding(h.id)));
+    }
+
+    function removeHolding(id) {
+        holdings = holdings.filter(h => h.id !== id);
+        saveHoldings();
+        render();
+    }
+
+    function setManualPrice(id, value) {
+        const holding = holdings.find(h => h.id === id);
+        if (!holding) return;
+        const v = parseFloat(value);
+        if (!isNaN(v) && v >= 0) {
+            holding.price = v;
+            holding.manual = true;
+            holding.error = null;
+            saveHoldings();
+            render();
+        }
+    }
+
+    function setQuantity(id, value) {
+        const holding = holdings.find(h => h.id === id);
+        if (!holding) return;
+        const v = parseFloat(value);
+        if (!isNaN(v) && v >= 0) {
+            holding.quantity = v;
+            saveHoldings();
+            render();
+        }
+    }
+
+    function valueInJpy(holding) {
+        if (holding.price === null) return 0;
+        if (holding.currency === 'USD') {
+            return usdJpyRate ? holding.price * holding.quantity * usdJpyRate : 0;
+        }
+        return holding.price * holding.quantity;
+    }
+
+    function render() {
+        if (holdings.length === 0) {
+            holdingsBody.innerHTML = '<tr class="empty-row"><td colspan="6">まだ銘柄が登録されていません</td></tr>';
+        } else {
+            holdingsBody.innerHTML = holdings.map(h => {
+                const jpyValue = valueInJpy(h);
+                const priceLabel = h.price !== null
+                    ? `${h.price.toLocaleString('ja-JP', { maximumFractionDigits: 2 })} ${h.currency || ''}`
+                    : '-';
+                let note = '';
+                if (h.error) note = `<div class="price-note error">${h.error}</div>`;
+                else if (h.manual) note = `<div class="price-note manual">手動入力</div>`;
+
+                return `
+                <tr data-id="${h.id}">
+                    <td><span class="market-badge ${h.market}">${h.market === 'JP' ? '日本' : '米国'}</span></td>
+                    <td>${h.code}</td>
+                    <td><input type="number" class="qty-input" value="${h.quantity}" min="0" step="1"></td>
+                    <td>
+                        <div class="price-cell">
+                            <input type="number" class="price-input" value="${h.price !== null ? h.price : ''}" min="0" step="0.01" placeholder="${priceLabel === '-' ? '未取得' : ''}">
+                            ${note}
+                        </div>
+                    </td>
+                    <td>${formatYen(jpyValue)}</td>
+                    <td><button type="button" class="danger remove-btn">削除</button></td>
+                </tr>`;
+            }).join('');
+        }
+
+        let totalJP = 0, totalUS = 0;
+        for (const h of holdings) {
+            const v = valueInJpy(h);
+            if (h.market === 'JP') totalJP += v;
+            else totalUS += v;
+        }
+        totalJPEl.textContent = formatYen(totalJP);
+        totalUSEl.textContent = formatYen(totalUS);
+        totalGrandEl.textContent = formatYen(totalJP + totalUS);
+
+        holdingsBody.querySelectorAll('tr[data-id]').forEach(row => {
+            const id = row.getAttribute('data-id');
+            row.querySelector('.remove-btn').addEventListener('click', () => removeHolding(id));
+            row.querySelector('.qty-input').addEventListener('change', (e) => setQuantity(id, e.target.value));
+            row.querySelector('.price-input').addEventListener('change', (e) => setManualPrice(id, e.target.value));
+        });
+    }
+
+    addForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const market = document.getElementById('marketSelect').value;
+        const code = document.getElementById('codeInput').value;
+        const quantity = parseFloat(document.getElementById('qtyInput').value);
+        if (!code.trim() || isNaN(quantity) || quantity <= 0) return;
+        addHolding(market, code, quantity);
+        document.getElementById('codeInput').value = '';
+    });
+
+    document.getElementById('refreshAllBtn').addEventListener('click', refreshAll);
+
+    (async function init() {
+        render();
+        await refreshRate();
+        await refreshAll();
+    })();
+})();
+</script>
+</body>
+</html>
