@@ -177,6 +177,7 @@
     .price-note { font-size: 10px; color: var(--text-dim); }
     .price-note.manual { color: var(--yellow); }
     .price-note.error { color: var(--red); }
+    .price-note.prevclose { color: var(--text-dim); }
 
     .market-badge {
         display: inline-block;
@@ -224,6 +225,15 @@
     .totals .item.grand .value {
         color: var(--accent);
         font-size: 26px;
+    }
+
+    .totals .item .value.positive { color: var(--green); }
+    .totals .item .value.negative { color: var(--red); }
+
+    .checkpoint-note {
+        font-size: 11px;
+        color: var(--text-dim);
+        margin-top: 2px;
     }
 
     .toolbar {
@@ -314,6 +324,11 @@
                 <div class="label">総資産</div>
                 <div class="value" id="totalGrand">¥0</div>
             </div>
+            <div class="item">
+                <div class="label">前日比</div>
+                <div class="value" id="totalChange">-</div>
+                <div class="checkpoint-note" id="checkpointNote"></div>
+            </div>
         </div>
     </div>
 </div>
@@ -324,6 +339,9 @@
 
     const STORAGE_KEY = 'stockAssetCalculator.holdings.v1';
     const RATE_CACHE_KEY = 'stockAssetCalculator.rate.v1';
+    const CHECKPOINT_KEY = 'stockAssetCalculator.checkpoints.v1';
+    const CHECKPOINT_RETENTION_MS = 14 * 24 * 60 * 60 * 1000; // 14日分保持
+    const JST_OFFSET_MS = 9 * 60 * 60 * 1000; // 日本標準時はUTC+9固定（サマータイムなし）
 
     /** @type {{id:string, market:'JP'|'US', code:string, quantity:number, price:number|null, currency:string, manual:boolean, error:string|null}[]} */
     let holdings = loadHoldings();
@@ -338,6 +356,8 @@
     const totalJPEl = document.getElementById('totalJP');
     const totalUSEl = document.getElementById('totalUS');
     const totalGrandEl = document.getElementById('totalGrand');
+    const totalChangeEl = document.getElementById('totalChange');
+    const checkpointNoteEl = document.getElementById('checkpointNote');
 
     function loadHoldings() {
         try {
@@ -356,6 +376,110 @@
         return '¥' + Math.round(n).toLocaleString('ja-JP');
     }
 
+    // --- 前日比チェックポイント（日本時間 6:00 / 15:30 基準） ---
+    //
+    // このアプリは常駐サーバーを持たないため、6:00/15:30ちょうどの資産額を
+    // 確実に記録することはできない。その代わり、各区間（[6:00,15:30) と
+    // [15:30,翌6:00)）で最初に画面を開いた/更新したタイミングの資産額を
+    // その区間の基準値として記録し、以後の比較に使う。
+
+    function toJstWallClock(realMs) {
+        // UTC+9固定のためgetUTC*系を使って日本時間の年月日時分を取り出す
+        return new Date(realMs + JST_OFFSET_MS);
+    }
+
+    // 指定時刻（実UTC ms）から見て直近（以前）のチェックポイント境界を実UTC msで返す
+    function getLatestCheckpointBoundary(nowRealMs = Date.now()) {
+        const jst = toJstWallClock(nowRealMs);
+        const y = jst.getUTCFullYear(), m = jst.getUTCMonth(), d = jst.getUTCDate();
+        const today6 = Date.UTC(y, m, d, 6, 0, 0, 0);
+        const today1530 = Date.UTC(y, m, d, 15, 30, 0, 0);
+        const jstMs = jst.getTime();
+
+        let boundaryJstMs;
+        if (jstMs >= today1530) {
+            boundaryJstMs = today1530;
+        } else if (jstMs >= today6) {
+            boundaryJstMs = today6;
+        } else {
+            boundaryJstMs = today1530 - 24 * 60 * 60 * 1000; // 前日15:30
+        }
+        return boundaryJstMs - JST_OFFSET_MS;
+    }
+
+    // 次のチェックポイント境界（実UTC ms）を返す
+    function getNextCheckpointBoundary(nowRealMs = Date.now()) {
+        const jst = toJstWallClock(nowRealMs);
+        const y = jst.getUTCFullYear(), m = jst.getUTCMonth(), d = jst.getUTCDate();
+        const candidates = [
+            Date.UTC(y, m, d, 6, 0, 0, 0),
+            Date.UTC(y, m, d, 15, 30, 0, 0),
+            Date.UTC(y, m, d + 1, 6, 0, 0, 0),
+        ];
+        const jstMs = jst.getTime();
+        const nextJstMs = candidates.find(c => c > jstMs);
+        return nextJstMs - JST_OFFSET_MS;
+    }
+
+    function formatJstLabel(realMs) {
+        const jst = toJstWallClock(realMs);
+        const mm = jst.getUTCMonth() + 1;
+        const dd = jst.getUTCDate();
+        const hh = String(jst.getUTCHours()).padStart(2, '0');
+        const mi = String(jst.getUTCMinutes()).padStart(2, '0');
+        return `${mm}/${dd} ${hh}:${mi}`;
+    }
+
+    function loadCheckpoints() {
+        try {
+            const raw = localStorage.getItem(CHECKPOINT_KEY);
+            return raw ? JSON.parse(raw) : {};
+        } catch {
+            return {};
+        }
+    }
+
+    function saveCheckpoints(checkpoints) {
+        const cutoff = Date.now() - CHECKPOINT_RETENTION_MS;
+        for (const key of Object.keys(checkpoints)) {
+            if (Number(key) < cutoff) delete checkpoints[key];
+        }
+        localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(checkpoints));
+    }
+
+    // 現在の総資産を記録しつつ、直近チェックポイントとの差分を返す
+    function updateCheckpointAndGetChange(totalJPY) {
+        const boundaryRealMs = getLatestCheckpointBoundary();
+        const key = String(boundaryRealMs);
+        const checkpoints = loadCheckpoints();
+
+        if (!checkpoints[key]) {
+            checkpoints[key] = { totalJPY, capturedAt: Date.now() };
+            saveCheckpoints(checkpoints);
+        }
+
+        const ref = checkpoints[key];
+        const diff = totalJPY - ref.totalJPY;
+        const pct = ref.totalJPY !== 0 ? (diff / ref.totalJPY) * 100 : 0;
+
+        return {
+            diff,
+            pct,
+            boundaryLabel: formatJstLabel(boundaryRealMs),
+            capturedLabel: formatJstLabel(ref.capturedAt),
+            isFresh: Math.abs(ref.capturedAt - boundaryRealMs) < 60 * 1000,
+        };
+    }
+
+    function formatChange(diff, pct) {
+        const rounded = Math.round(diff);
+        const sign = rounded > 0 ? '+' : (rounded < 0 ? '-' : '');
+        const yenStr = `${sign}¥${Math.abs(rounded).toLocaleString('ja-JP')}`;
+        const pctSign = pct > 0 ? '+' : (pct < 0 ? '' : '±');
+        const pctStr = `${pctSign}${pct.toFixed(2)}%`;
+        return `${yenStr} (${pctStr})`;
+    }
+
     function normalizeSymbol(market, code) {
         const trimmed = code.trim().toUpperCase();
         if (market === 'JP') {
@@ -370,24 +494,37 @@
         return res.json();
     }
 
+    function parseQuoteMeta(data) {
+        const meta = data?.chart?.result?.[0]?.meta;
+        if (!meta) throw new Error('価格データなし');
+
+        const marketState = meta.marketState || 'REGULAR';
+        let price = meta.regularMarketPrice;
+        let isPreviousClose = false;
+
+        // 取引所が休場中（REGULAR以外）の場合は前日終値を使う
+        if (marketState !== 'REGULAR') {
+            const prevClose = meta.previousClose ?? meta.chartPreviousClose;
+            if (typeof prevClose === 'number') {
+                price = prevClose;
+                isPreviousClose = true;
+            }
+        }
+
+        if (typeof price !== 'number') throw new Error('価格データなし');
+        return { price, currency: meta.currency || null, marketState, isPreviousClose };
+    }
+
     async function fetchQuote(symbol) {
         const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`;
         try {
             const data = await fetchJson(yahooUrl);
-            const result = data?.chart?.result?.[0];
-            const price = result?.meta?.regularMarketPrice;
-            const currency = result?.meta?.currency;
-            if (typeof price === 'number') return { price, currency: currency || null };
-            throw new Error('価格データなし');
+            return parseQuoteMeta(data);
         } catch (directErr) {
             try {
                 const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(yahooUrl)}`;
                 const data = await fetchJson(proxyUrl);
-                const result = data?.chart?.result?.[0];
-                const price = result?.meta?.regularMarketPrice;
-                const currency = result?.meta?.currency;
-                if (typeof price === 'number') return { price, currency: currency || null };
-                throw new Error('価格データなし');
+                return parseQuoteMeta(data);
             } catch (proxyErr) {
                 throw new Error('株価取得に失敗しました');
             }
@@ -471,9 +608,10 @@
         if (!holding) return;
         try {
             const symbol = normalizeSymbol(holding.market, holding.code);
-            const { price, currency } = await fetchQuote(symbol);
+            const { price, currency, isPreviousClose } = await fetchQuote(symbol);
             holding.price = price;
             holding.currency = currency || holding.currency;
+            holding.isPreviousClose = isPreviousClose;
             holding.manual = false;
             holding.error = null;
         } catch (err) {
@@ -537,6 +675,7 @@
                 let note = '';
                 if (h.error) note = `<div class="price-note error">${h.error}</div>`;
                 else if (h.manual) note = `<div class="price-note manual">手動入力</div>`;
+                else if (h.isPreviousClose) note = `<div class="price-note prevclose">休場中・前日終値</div>`;
 
                 return `
                 <tr data-id="${h.id}">
@@ -561,9 +700,24 @@
             if (h.market === 'JP') totalJP += v;
             else totalUS += v;
         }
+        const totalGrand = totalJP + totalUS;
         totalJPEl.textContent = formatYen(totalJP);
         totalUSEl.textContent = formatYen(totalUS);
-        totalGrandEl.textContent = formatYen(totalJP + totalUS);
+        totalGrandEl.textContent = formatYen(totalGrand);
+
+        if (totalGrand > 0) {
+            const change = updateCheckpointAndGetChange(totalGrand);
+            totalChangeEl.textContent = formatChange(change.diff, change.pct);
+            totalChangeEl.classList.toggle('positive', change.diff > 0);
+            totalChangeEl.classList.toggle('negative', change.diff < 0);
+            checkpointNoteEl.textContent = change.isFresh
+                ? `基準: ${change.boundaryLabel} JST時点`
+                : `基準: ${change.boundaryLabel} JST（実際の記録は ${change.capturedLabel}）`;
+        } else {
+            totalChangeEl.textContent = '-';
+            totalChangeEl.classList.remove('positive', 'negative');
+            checkpointNoteEl.textContent = '';
+        }
 
         holdingsBody.querySelectorAll('tr[data-id]').forEach(row => {
             const id = row.getAttribute('data-id');
@@ -585,10 +739,23 @@
 
     document.getElementById('refreshAllBtn').addEventListener('click', refreshAll);
 
+    // タブを開いたままにしている場合、6:00/15:30 JSTの境界を跨いだ瞬間に
+    // 再取得して、その時点の資産額をチェックポイントとして記録する
+    function scheduleNextCheckpointRefresh() {
+        const delay = Math.max(1000, getNextCheckpointBoundary() - Date.now());
+        setTimeout(async () => {
+            rateIsManual = false;
+            await refreshRate();
+            await refreshAll();
+            scheduleNextCheckpointRefresh();
+        }, delay);
+    }
+
     (async function init() {
         render();
         await refreshRate();
         await refreshAll();
+        scheduleNextCheckpointRefresh();
     })();
 })();
 </script>
