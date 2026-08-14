@@ -179,6 +179,10 @@
     .price-note.error { color: var(--red); }
     .price-note.prevclose { color: var(--text-dim); }
 
+    .price-change { font-size: 10px; margin-top: 2px; }
+    .price-change.positive { color: var(--red); }
+    .price-change.negative { color: var(--green); }
+
     .market-badge {
         display: inline-block;
         font-size: 11px;
@@ -430,7 +434,9 @@
         return `${mm}/${dd} ${hh}:${mi}`;
     }
 
-    function loadCheckpoints() {
+    // チェックポイント記録はスコープ（'TOTAL' = 総資産、銘柄シンボル = 個別株価）ごとに保持する
+    // 構造: { [scope]: { [boundaryRealMs]: { value, capturedAt } } }
+    function loadCheckpointStore() {
         try {
             const raw = localStorage.getItem(CHECKPOINT_KEY);
             return raw ? JSON.parse(raw) : {};
@@ -439,28 +445,32 @@
         }
     }
 
-    function saveCheckpoints(checkpoints) {
+    function saveCheckpointStore(store) {
         const cutoff = Date.now() - CHECKPOINT_RETENTION_MS;
-        for (const key of Object.keys(checkpoints)) {
-            if (Number(key) < cutoff) delete checkpoints[key];
+        for (const scope of Object.keys(store)) {
+            for (const key of Object.keys(store[scope])) {
+                if (Number(key) < cutoff) delete store[scope][key];
+            }
+            if (Object.keys(store[scope]).length === 0) delete store[scope];
         }
-        localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(checkpoints));
+        localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(store));
     }
 
-    // 現在の総資産を記録しつつ、直近チェックポイントとの差分を返す
-    function updateCheckpointAndGetChange(totalJPY) {
+    // 指定スコープの現在値を記録しつつ、直近チェックポイントとの差分を返す
+    function updateCheckpointAndGetChange(scope, currentValue) {
         const boundaryRealMs = getLatestCheckpointBoundary();
         const key = String(boundaryRealMs);
-        const checkpoints = loadCheckpoints();
+        const store = loadCheckpointStore();
+        if (!store[scope]) store[scope] = {};
 
-        if (!checkpoints[key]) {
-            checkpoints[key] = { totalJPY, capturedAt: Date.now() };
-            saveCheckpoints(checkpoints);
+        if (!store[scope][key]) {
+            store[scope][key] = { value: currentValue, capturedAt: Date.now() };
+            saveCheckpointStore(store);
         }
 
-        const ref = checkpoints[key];
-        const diff = totalJPY - ref.totalJPY;
-        const pct = ref.totalJPY !== 0 ? (diff / ref.totalJPY) * 100 : 0;
+        const ref = store[scope][key];
+        const diff = currentValue - ref.value;
+        const pct = ref.value !== 0 ? (diff / ref.value) * 100 : 0;
 
         return {
             diff,
@@ -478,6 +488,15 @@
         const pctSign = pct > 0 ? '+' : (pct < 0 ? '' : '±');
         const pctStr = `${pctSign}${pct.toFixed(2)}%`;
         return `${yenStr} (${pctStr})`;
+    }
+
+    function formatPriceChange(diff, pct, currency) {
+        const sign = diff > 0 ? '+' : (diff < 0 ? '-' : '');
+        const numStr = `${sign}${Math.abs(diff).toLocaleString('ja-JP', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const pctSign = pct > 0 ? '+' : (pct < 0 ? '' : '±');
+        const pctStr = `${pctSign}${pct.toFixed(2)}%`;
+        const currencyLabel = currency ? ` ${currency}` : '';
+        return `${numStr}${currencyLabel} (${pctStr})`;
     }
 
     function normalizeSymbol(market, code) {
@@ -686,6 +705,18 @@
                 else if (h.manual) note = `<div class="price-note manual">手動入力</div>`;
                 else if (h.isPreviousClose) note = `<div class="price-note prevclose">休場中・前日終値</div>`;
 
+                // 総資産と同じ基準（日本時間6:00/15:30の直近チェックポイント）で銘柄ごとの前日比も記録・表示する
+                let changeHtml = '';
+                if (h.price !== null && !h.error && !h.manual) {
+                    const symbol = normalizeSymbol(h.market, h.code);
+                    const change = updateCheckpointAndGetChange(symbol, h.price);
+                    const cls = change.diff > 0 ? 'positive' : (change.diff < 0 ? 'negative' : '');
+                    const title = change.isFresh
+                        ? `基準: ${change.boundaryLabel} JST時点`
+                        : `基準: ${change.boundaryLabel} JST（実際の記録は ${change.capturedLabel}）`;
+                    changeHtml = `<div class="price-change ${cls}" title="${title}">${formatPriceChange(change.diff, change.pct, h.currency)}</div>`;
+                }
+
                 return `
                 <tr data-id="${h.id}">
                     <td><span class="market-badge ${h.market}">${h.market === 'JP' ? '日本' : '米国'}</span></td>
@@ -695,6 +726,7 @@
                         <div class="price-cell">
                             <input type="number" class="price-input" value="${h.price !== null ? h.price : ''}" min="0" step="0.01" placeholder="${priceLabel === '-' ? '未取得' : ''}">
                             ${note}
+                            ${changeHtml}
                         </div>
                     </td>
                     <td>${formatYen(jpyValue)}</td>
@@ -715,7 +747,7 @@
         totalGrandEl.textContent = formatYen(totalGrand);
 
         if (totalGrand > 0) {
-            const change = updateCheckpointAndGetChange(totalGrand);
+            const change = updateCheckpointAndGetChange('TOTAL', totalGrand);
             totalChangeEl.textContent = formatChange(change.diff, change.pct);
             totalChangeEl.classList.toggle('positive', change.diff > 0);
             totalChangeEl.classList.toggle('negative', change.diff < 0);
