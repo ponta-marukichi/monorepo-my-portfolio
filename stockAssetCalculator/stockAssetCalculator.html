@@ -272,6 +272,21 @@
     </div>
 
     <div class="panel">
+        <h2>現金・余力</h2>
+        <div class="add-form">
+            <div class="field">
+                <label for="cashJpyInput">円建て余力</label>
+                <input type="number" id="cashJpyInput" min="0" step="1" placeholder="0">
+            </div>
+            <div class="field">
+                <label for="cashUsdInput">ドル建て余力</label>
+                <input type="number" id="cashUsdInput" min="0" step="0.01" placeholder="0">
+            </div>
+        </div>
+        <div class="hint">証券口座の現金残高（買付余力）を入力すると、総資産に円換算で反映されます。ドル建てはUSD/JPYレートで円換算されます。</div>
+    </div>
+
+    <div class="panel">
         <h2>銘柄を追加</h2>
         <form class="add-form" id="addForm">
             <div class="field">
@@ -324,6 +339,10 @@
                 <div class="label">米国株 評価額（円換算）</div>
                 <div class="value" id="totalUS">¥0</div>
             </div>
+            <div class="item">
+                <div class="label">現金・余力（円換算）</div>
+                <div class="value" id="totalCash">¥0</div>
+            </div>
             <div class="item grand">
                 <div class="label">総資産</div>
                 <div class="value" id="totalGrand">¥0</div>
@@ -342,6 +361,7 @@
     'use strict';
 
     const STORAGE_KEY = 'stockAssetCalculator.holdings.v1';
+    const CASH_STORAGE_KEY = 'stockAssetCalculator.cash.v1';
     const RATE_CACHE_KEY = 'stockAssetCalculator.rate.v1';
     const CHECKPOINT_KEY = 'stockAssetCalculator.checkpoints.v1';
     const CHECKPOINT_RETENTION_MS = 14 * 24 * 60 * 60 * 1000; // 14日分保持
@@ -349,6 +369,7 @@
 
     /** @type {{id:string, market:'JP'|'US', code:string, quantity:number, price:number|null, currency:string, manual:boolean, error:string|null}[]} */
     let holdings = loadHoldings();
+    let cash = loadCash();
     let usdJpyRate = null;
     let rateIsManual = false;
 
@@ -357,8 +378,11 @@
     const rateValueEl = document.getElementById('rateValue');
     const rateStatusEl = document.getElementById('rateStatus');
     const rateOverrideEl = document.getElementById('rateOverride');
+    const cashJpyInputEl = document.getElementById('cashJpyInput');
+    const cashUsdInputEl = document.getElementById('cashUsdInput');
     const totalJPEl = document.getElementById('totalJP');
     const totalUSEl = document.getElementById('totalUS');
+    const totalCashEl = document.getElementById('totalCash');
     const totalGrandEl = document.getElementById('totalGrand');
     const totalChangeEl = document.getElementById('totalChange');
     const checkpointNoteEl = document.getElementById('checkpointNote');
@@ -374,6 +398,20 @@
 
     function saveHoldings() {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(holdings));
+    }
+
+    function loadCash() {
+        try {
+            const raw = localStorage.getItem(CASH_STORAGE_KEY);
+            const parsed = raw ? JSON.parse(raw) : {};
+            return { jpy: Number(parsed.jpy) || 0, usd: Number(parsed.usd) || 0 };
+        } catch {
+            return { jpy: 0, usd: 0 };
+        }
+    }
+
+    function saveCash() {
+        localStorage.setItem(CASH_STORAGE_KEY, JSON.stringify(cash));
     }
 
     function formatYen(n) {
@@ -741,9 +779,11 @@
             if (h.market === 'JP') totalJP += v;
             else totalUS += v;
         }
-        const totalGrand = totalJP + totalUS;
+        const totalCash = cash.jpy + (usdJpyRate ? cash.usd * usdJpyRate : 0);
+        const totalGrand = totalJP + totalUS + totalCash;
         totalJPEl.textContent = formatYen(totalJP);
         totalUSEl.textContent = formatYen(totalUS);
+        totalCashEl.textContent = formatYen(totalCash);
         totalGrandEl.textContent = formatYen(totalGrand);
 
         if (totalGrand > 0) {
@@ -780,6 +820,20 @@
 
     document.getElementById('refreshAllBtn').addEventListener('click', refreshAll);
 
+    cashJpyInputEl.addEventListener('change', () => {
+        const v = parseFloat(cashJpyInputEl.value);
+        cash.jpy = isNaN(v) || v < 0 ? 0 : v;
+        saveCash();
+        render();
+    });
+
+    cashUsdInputEl.addEventListener('change', () => {
+        const v = parseFloat(cashUsdInputEl.value);
+        cash.usd = isNaN(v) || v < 0 ? 0 : v;
+        saveCash();
+        render();
+    });
+
     // タブを開いたままにしている場合、6:00/15:30 JSTの境界を跨いだ瞬間に
     // 再取得して、その時点の資産額をチェックポイントとして記録する
     function scheduleNextCheckpointRefresh() {
@@ -793,6 +847,8 @@
     }
 
     (async function init() {
+        cashJpyInputEl.value = cash.jpy || '';
+        cashUsdInputEl.value = cash.usd || '';
         render();
         await refreshRate();
         await refreshAll();
