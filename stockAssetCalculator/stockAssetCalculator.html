@@ -601,11 +601,13 @@
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
-    // 無料の公開CORSプロキシは短時間に大量のリクエストを投げると429などで
-    // 弾かれる。銘柄ごとの取得を一斉に走らせると、最初の1〜2件だけ成功して
-    // 残りが全滅する。そこで全リクエストを1本のキューに通し、必ず一定間隔を
-    // 空けて順番に送る。
-    const REQUEST_GAP_MS = 400;
+    // 死んでいる経路を長々と待たないための短めのタイムアウト。
+    // ここが長いと、候補を順に試す間に1銘柄で何十秒も溶ける。
+    const FETCH_TIMEOUT_MS = 4000;
+
+    // 生きている経路が分かっている間は1銘柄=1リクエストで済むので、
+    // 間隔はレート制限を避けられる最小限で十分。
+    const REQUEST_GAP_MS = 150;
     let requestChain = Promise.resolve();
     let lastRequestAt = 0;
 
@@ -621,7 +623,7 @@
         return run;
     }
 
-    async function fetchJsonRaw(url, timeoutMs = 10000) {
+    async function fetchJsonRaw(url, timeoutMs = FETCH_TIMEOUT_MS) {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
@@ -637,25 +639,49 @@
         return enqueueRequest(() => fetchJsonRaw(url, timeoutMs));
     }
 
-    // 無料の公開CORSプロキシは1つに依存すると、そのプロキシ自体が不調・
-    // レスポンスをキャッシュしている場合に丸ごと止まって見える。
-    // 複数の候補を順番に試し、最初に成功したものを使う。
-    const PROXY_BUILDERS = [
-        url => url,
-        url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-        url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
-        url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+    // 無料の公開CORSプロキシは個々の可用性が低く、1つに依存すると丸ごと
+    // 止まって見える。候補を多めに持ち、生きているものを1つ見つけて使い回す。
+    // unwrap は、本文を包んで返すタイプのプロキシ用。
+    const PROXY_ROUTES = [
+        { name: '直接', build: url => url },
+        { name: 'corsproxy.io', build: url => `https://corsproxy.io/?url=${encodeURIComponent(url)}` },
+        { name: 'codetabs', build: url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}` },
+        { name: 'allorigins', build: url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}` },
+        {
+            name: 'allorigins(get)',
+            build: url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+            unwrap: data => (typeof data?.contents === 'string' ? JSON.parse(data.contents) : data),
+        },
+        { name: 'cors.lol', build: url => `https://api.cors.lol/?url=${encodeURIComponent(url)}` },
+        { name: 'cors.workers.dev', build: url => `https://test.cors.workers.dev/?${url}` },
     ];
 
-    // 直前に成功した経路を覚えておき、次回はそこから試す。毎回ダメな候補を
-    // 先頭から順に叩き直すと、その分だけ余計にレート制限を踏んでしまう。
-    let preferredProxyIndex = 0;
+    // 生きていると分かった経路。null は「未確定＝探索が必要」。
+    let activeRouteIndex = null;
 
-    function buildFetchCandidates(targetUrl) {
-        return PROXY_BUILDERS.map((_, offset) => {
-            const index = (preferredProxyIndex + offset) % PROXY_BUILDERS.length;
-            return { index, url: PROXY_BUILDERS[index](targetUrl) };
+    async function fetchViaRoute(routeIndex, targetUrl) {
+        const route = PROXY_ROUTES[routeIndex];
+        const data = await fetchJson(route.build(targetUrl), FETCH_TIMEOUT_MS);
+        return route.unwrap ? route.unwrap(data) : data;
+    }
+
+    // 全経路を同時に投げて、最初に「有効な株価データ」を返したものを採用する。
+    // 順番に試すと死んだ経路のタイムアウトが積み上がって致命的に遅くなるため、
+    // 探索は並列で行い、以後は見つかった経路だけを使う。
+    async function discoverRoute(targetUrl, parse) {
+        const attempts = PROXY_ROUTES.map(async (route, index) => {
+            const raw = await fetchJsonRaw(route.build(targetUrl), FETCH_TIMEOUT_MS);
+            const data = route.unwrap ? route.unwrap(raw) : raw;
+            return { index, value: parse(data) };
         });
+        const winner = await Promise.any(attempts);
+        activeRouteIndex = winner.index;
+        console.info(`[stockAssetCalculator] 取得経路: ${PROXY_ROUTES[winner.index].name}`);
+        return winner.value;
+    }
+
+    function activeRouteName() {
+        return activeRouteIndex === null ? null : PROXY_ROUTES[activeRouteIndex].name;
     }
 
     // 日足の時系列から、直近セッションの終値とその営業日を取り出す。
@@ -760,27 +786,29 @@
         const yahooUrl = withCacheBuster(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=5d&interval=1d`);
 
         // fetch自体は200で成功しても、中身がレート制限メッセージやエラーJSON
-        // など有効な株価データでないプロキシもある。その場合も「このプロキシは
-        // 使えなかった」とみなして次の候補を試す（fetchとparseを同じループ内で
-        // 行う）。fetchだけ成功した時点で確定してしまうと、後続のより信頼できる
-        // 候補を試さずに諦めてしまうバグになる。
-        //
-        // 全候補が失敗した場合、レート制限が一時的に解けるのを待って再挑戦する。
-        const MAX_ROUNDS = 2;
-        for (let round = 0; round < MAX_ROUNDS; round++) {
-            if (round > 0) await sleep(1500 * round);
-            for (const { index, url } of buildFetchCandidates(yahooUrl)) {
-                try {
-                    const data = await fetchJson(url);
-                    const quote = parseQuoteMeta(data);
-                    preferredProxyIndex = index; // 次回はこの経路から試す
-                    return quote;
-                } catch (err) {
-                    console.warn(`[stockAssetCalculator] 取得失敗 (${symbol}):`, url.split('?')[0], err.message);
-                }
+        // など有効な株価データでないプロキシもある。パースまで通って初めて
+        // 「その経路は使えた」と判断する。
+
+        // 生きている経路が既に分かっていれば、それ1本だけ叩く（1銘柄=1リクエスト）。
+        if (activeRouteIndex !== null) {
+            try {
+                return parseQuoteMeta(await fetchViaRoute(activeRouteIndex, yahooUrl));
+            } catch (err) {
+                console.warn(`[stockAssetCalculator] 経路 ${activeRouteName()} が失敗 (${symbol}):`, err.message);
+                activeRouteIndex = null; // 経路が死んだので探索し直す
             }
         }
-        throw new Error('株価取得に失敗しました');
+
+        // 経路が未確定なら全候補を同時に投げて、最初に成功したものを採用する
+        try {
+            return await discoverRoute(
+                withCacheBuster(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=5d&interval=1d`),
+                parseQuoteMeta,
+            );
+        } catch (err) {
+            console.warn(`[stockAssetCalculator] 全経路が失敗 (${symbol})`);
+            throw new Error('株価取得に失敗しました');
+        }
     }
 
     async function fetchUsdJpyRate() {
@@ -1114,7 +1142,8 @@
             ? `${Math.round(LIVE_REFRESH_MS / 1000)}秒ごと（ザラ場中）`
             : `${Math.round(IDLE_REFRESH_MS / 60000)}分ごと（休場中）`;
         const nextLabel = nextRunAt ? ` / 次回 ${formatTime(nextRunAt)}` : '';
-        autoRefreshStatusEl.textContent = `${intervalLabel}${nextLabel}`;
+        const routeLabel = activeRouteName() ? ` / 経路 ${activeRouteName()}` : '';
+        autoRefreshStatusEl.textContent = `${intervalLabel}${nextLabel}${routeLabel}`;
     }
 
     async function runAutoRefresh() {
