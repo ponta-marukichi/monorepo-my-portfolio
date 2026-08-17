@@ -179,9 +179,11 @@
     .price-note.error { color: var(--red); }
     .price-note.prevclose { color: var(--text-dim); }
 
-    .price-change { font-size: 10px; margin-top: 2px; }
+    .price-change { font-size: 10px; margin-top: 2px; color: var(--text-dim); }
     .price-change.positive { color: var(--red); }
     .price-change.negative { color: var(--green); }
+    /* 最新でない値から算出した参考値であることを控えめに示す */
+    .price-change.stale { opacity: 0.65; font-style: italic; }
 
     .market-badge {
         display: inline-block;
@@ -407,6 +409,12 @@
     let autoRefreshTimer = null;
     let isRefreshing = false;
 
+    // このセッションで実際に取得に成功した銘柄のid。
+    // localStorageから復元した価格は「前回の値」であって最新ではないため、
+    // それを前日比の基準値として記録してしまわないように区別する。
+    const freshlyFetchedIds = new Set();
+    let hasCompletedInitialRefresh = false;
+
     const holdingsBody = document.getElementById('holdingsBody');
     const addForm = document.getElementById('addForm');
     const rateValueEl = document.getElementById('rateValue');
@@ -539,14 +547,20 @@
         localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(store));
     }
 
-    // 指定スコープの現在値を記録しつつ、直近チェックポイントとの差分を返す
-    function updateCheckpointAndGetChange(scope, currentValue) {
+    // 指定スコープの現在値と、直近チェックポイントとの差分を返す。
+    //
+    // record=false のときは基準値の記録を行わず、既存の基準がなければ null を
+    // 返す。取得に失敗した銘柄（表示中の値が前回値）や手動入力の値で基準を
+    // 作ってしまうと、以後その古い値と比較し続けることになるため、基準の
+    // 記録は「新しく取得できた値」でのみ行う。
+    function getCheckpointChange(scope, currentValue, { record }) {
         const boundaryRealMs = getLatestCheckpointBoundary();
         const key = String(boundaryRealMs);
         const store = loadCheckpointStore();
         if (!store[scope]) store[scope] = {};
 
         if (!store[scope][key]) {
+            if (!record) return null;
             store[scope][key] = { value: currentValue, capturedAt: Date.now() };
             saveCheckpointStore(store);
         }
@@ -562,6 +576,10 @@
             capturedLabel: formatJstLabel(ref.capturedAt),
             isFresh: Math.abs(ref.capturedAt - boundaryRealMs) < 60 * 1000,
         };
+    }
+
+    function updateCheckpointAndGetChange(scope, currentValue) {
+        return getCheckpointChange(scope, currentValue, { record: true });
     }
 
     function formatChange(diff, pct) {
@@ -915,9 +933,11 @@
             holding.manual = false;
             holding.error = null;
             holding.lastFetchedAt = Date.now();
+            freshlyFetchedIds.add(holding.id);
         } catch (err) {
             holding.error = err.message || '取得失敗';
             holding.lastAttemptAt = Date.now();
+            freshlyFetchedIds.delete(holding.id);
         }
         saveHoldings();
         render();
@@ -1022,21 +1042,33 @@
                 // 銘柄ごとの前日比も記録・表示する。米国株はUSD建てのままだと
                 // 総資産の前日比と単位が揃わないので、円換算した1株あたりの
                 // 価格を基準値として記録し、円で表示する。
+                //
+                // 取得に失敗している銘柄も、表示中の（前回取得できた）値を使って
+                // 前日比を出す。ただしその値で基準を作ると以後ずっと古い値と
+                // 比較し続けることになるので、基準の記録は取得成功時のみ行う。
                 let changeHtml = '';
                 const unitJpy = unitPriceInJpy(h);
-                if (unitJpy !== null && !h.error && !h.manual) {
+                if (unitJpy !== null) {
                     const symbol = normalizeSymbol(h.market, h.code);
-                    const change = updateCheckpointAndGetChange(`${symbol}#jpy`, unitJpy);
-                    // 保有株数を後から変えても基準がずれないよう、記録は1株あたりの
-                    // 円価格で行い、表示額だけ現在の保有株数を掛ける
-                    const positionDiff = change.diff * h.quantity;
-                    const cls = positionDiff > 0 ? 'positive' : (positionDiff < 0 ? 'negative' : '');
-                    const baseTitle = change.isFresh
-                        ? `基準: ${change.boundaryLabel} JST時点`
-                        : `基準: ${change.boundaryLabel} JST（実際の記録は ${change.capturedLabel}）`;
-                    const perShare = formatPriceChange(change.diff, change.pct, 'JPY');
-                    const title = `${baseTitle} / 1株あたり ${perShare}`;
-                    changeHtml = `<div class="price-change ${cls}" title="${title}">${formatChange(positionDiff, change.pct)}</div>`;
+                    const isLiveValue = freshlyFetchedIds.has(h.id) && !h.error && !h.manual;
+                    const change = getCheckpointChange(`${symbol}#jpy`, unitJpy, { record: isLiveValue });
+                    if (change) {
+                        // 保有株数を後から変えても基準がずれないよう、記録は1株あたりの
+                        // 円価格で行い、表示額だけ現在の保有株数を掛ける
+                        const positionDiff = change.diff * h.quantity;
+                        const cls = positionDiff > 0 ? 'positive' : (positionDiff < 0 ? 'negative' : '');
+                        const staleCls = isLiveValue ? '' : ' stale';
+                        const baseTitle = change.isFresh
+                            ? `基準: ${change.boundaryLabel} JST時点`
+                            : `基準: ${change.boundaryLabel} JST（実際の記録は ${change.capturedLabel}）`;
+                        const perShare = formatPriceChange(change.diff, change.pct, 'JPY');
+                        const staleTitle = isLiveValue ? '' : ' ※現在値が最新でないため参考値';
+                        const title = `${baseTitle} / 1株あたり ${perShare}${staleTitle}`;
+                        const suffix = isLiveValue ? '' : ' ※参考';
+                        changeHtml = `<div class="price-change ${cls}${staleCls}" title="${title}">${formatChange(positionDiff, change.pct)}${suffix}</div>`;
+                    } else {
+                        changeHtml = `<div class="price-change stale" title="この区間の基準値がまだ記録されていません">前日比 —（基準未取得）</div>`;
+                    }
                 }
 
                 return `
@@ -1073,13 +1105,21 @@
         totalGrandEl.textContent = formatYen(totalGrand);
 
         if (totalGrand > 0) {
-            const change = updateCheckpointAndGetChange('TOTAL', totalGrand);
-            totalChangeEl.textContent = formatChange(change.diff, change.pct);
-            totalChangeEl.classList.toggle('positive', change.diff > 0);
-            totalChangeEl.classList.toggle('negative', change.diff < 0);
-            checkpointNoteEl.textContent = change.isFresh
-                ? `基準: ${change.boundaryLabel} JST時点`
-                : `基準: ${change.boundaryLabel} JST（実際の記録は ${change.capturedLabel}）`;
+            // 初回取得が終わるまでは、localStorageから復元した古い評価額で
+            // 基準を作らないよう記録を保留する
+            const change = getCheckpointChange('TOTAL', totalGrand, { record: hasCompletedInitialRefresh });
+            if (change) {
+                totalChangeEl.textContent = formatChange(change.diff, change.pct);
+                totalChangeEl.classList.toggle('positive', change.diff > 0);
+                totalChangeEl.classList.toggle('negative', change.diff < 0);
+                checkpointNoteEl.textContent = change.isFresh
+                    ? `基準: ${change.boundaryLabel} JST時点`
+                    : `基準: ${change.boundaryLabel} JST（実際の記録は ${change.capturedLabel}）`;
+            } else {
+                totalChangeEl.textContent = '—';
+                totalChangeEl.classList.remove('positive', 'negative');
+                checkpointNoteEl.textContent = '基準値の記録待ち';
+            }
         } else {
             totalChangeEl.textContent = '-';
             totalChangeEl.classList.remove('positive', 'negative');
@@ -1214,6 +1254,9 @@
         autoRefreshEnabled = autoRefreshToggleEl.checked;
         render();
         await runAutoRefresh();
+        // ここまでで一巡取得し終えたので、以後は総資産の基準値も記録してよい
+        hasCompletedInitialRefresh = true;
+        render();
         scheduleNextCheckpointRefresh();
         scheduleAutoRefresh();
     })();
