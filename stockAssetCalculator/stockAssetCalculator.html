@@ -580,18 +580,6 @@
         ];
     }
 
-    async function fetchJsonWithFallback(targetUrl) {
-        let lastError = new Error('取得に失敗しました');
-        for (const url of buildFetchCandidates(targetUrl)) {
-            try {
-                return await fetchJson(url);
-            } catch (err) {
-                lastError = err;
-            }
-        }
-        throw lastError;
-    }
-
     function parseQuoteMeta(data) {
         const meta = data?.chart?.result?.[0]?.meta;
         if (!meta) throw new Error('価格データなし');
@@ -624,12 +612,21 @@
         // あるため、ラップする前のYahoo URL自体にもキャッシュバスターを付けて
         // 「毎回別のURL」として扱わせる
         const yahooUrl = withCacheBuster(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
-        try {
-            const data = await fetchJsonWithFallback(yahooUrl);
-            return parseQuoteMeta(data);
-        } catch (err) {
-            throw new Error('株価取得に失敗しました');
+
+        // fetch自体は200で成功しても、中身がレート制限メッセージやエラーJSON
+        // など有効な株価データでないプロキシもある。その場合も「このプロキシは
+        // 使えなかった」とみなして次の候補を試す（fetchとparseを同じループ内で
+        // 行う）。fetchだけ成功した時点で確定してしまうと、後続のより信頼できる
+        // 候補を試さずに諦めてしまうバグになる。
+        for (const url of buildFetchCandidates(yahooUrl)) {
+            try {
+                const data = await fetchJson(url);
+                return parseQuoteMeta(data);
+            } catch (err) {
+                console.warn(`[stockAssetCalculator] 取得失敗 (${symbol}):`, url.split('?')[0], err.message);
+            }
         }
+        throw new Error('株価取得に失敗しました');
     }
 
     async function fetchUsdJpyRate() {
