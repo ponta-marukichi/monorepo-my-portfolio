@@ -586,25 +586,52 @@
 
         const marketState = meta.marketState || 'REGULAR';
         let price = meta.regularMarketPrice;
-        let isPreviousClose = false;
+        let priceSource = 'regular';
+        let dataTimeSeconds = meta.regularMarketTime;
 
-        // 取引所が休場中（REGULAR以外）の場合は前日終値を使う
-        if (marketState !== 'REGULAR') {
+        // regularMarketPriceは取引時間中はライブ価格、休場中（CLOSEDなど）は
+        // 直近の終値（その日の取引がすでに終わっていれば「当日終値」）を
+        // 保持し続ける。previousCloseは「1つ前のセッション＝前日」の終値
+        // なので、休場中だからといってprevious Closeに置き換えると実際より
+        // 1営業日古い値になってしまう。そのため休場中でもregularMarketPrice
+        // をそのまま使い、previousCloseはregularMarketPrice自体が取得できな
+        // かった場合の最終手段としてのみ使う。
+        //
+        // ただしPRE（寄付前気配）/POST（時間外気配）中は専用の価格・時刻
+        // フィールドの方がregularMarketPriceより新しいので、それらを優先する。
+        if (marketState === 'PRE' && typeof meta.preMarketPrice === 'number') {
+            price = meta.preMarketPrice;
+            priceSource = 'pre';
+            dataTimeSeconds = meta.preMarketTime ?? dataTimeSeconds;
+        } else if ((marketState === 'POST' || marketState === 'POSTPOST') && typeof meta.postMarketPrice === 'number') {
+            price = meta.postMarketPrice;
+            priceSource = 'post';
+            dataTimeSeconds = meta.postMarketTime ?? dataTimeSeconds;
+        }
+
+        if (typeof price !== 'number') {
             const prevClose = meta.previousClose ?? meta.chartPreviousClose;
             if (typeof prevClose === 'number') {
                 price = prevClose;
-                isPreviousClose = true;
+                priceSource = 'previousClose';
             }
         }
 
         if (typeof price !== 'number') throw new Error('価格データなし');
 
-        // regularMarketTime はこの価格が実際にいつ時点のものかを示す
-        // Yahoo側のタイムスタンプ（秒）。取得処理自体は成功しているのに
-        // 値が更新されない場合、これが古いままかどうかで原因を切り分けられる。
-        const dataTime = typeof meta.regularMarketTime === 'number' ? meta.regularMarketTime * 1000 : null;
+        // dataTime はこの価格が実際にいつ時点のものかを示すYahoo側のタイム
+        // スタンプ。取得処理自体は成功しているのに値が更新されない場合、
+        // これが古いままかどうかで原因を切り分けられる。
+        const dataTime = typeof dataTimeSeconds === 'number' ? dataTimeSeconds * 1000 : null;
 
-        return { price, currency: meta.currency || null, marketState, isPreviousClose, dataTime };
+        return {
+            price,
+            currency: meta.currency || null,
+            marketState,
+            isPreviousClose: priceSource === 'previousClose',
+            priceSource,
+            dataTime,
+        };
     }
 
     async function fetchQuote(symbol) {
@@ -716,10 +743,12 @@
         if (!holding) return;
         try {
             const symbol = normalizeSymbol(holding.market, holding.code);
-            const { price, currency, isPreviousClose, dataTime } = await fetchQuote(symbol);
+            const { price, currency, isPreviousClose, priceSource, marketState, dataTime } = await fetchQuote(symbol);
             holding.price = price;
             holding.currency = currency || holding.currency;
             holding.isPreviousClose = isPreviousClose;
+            holding.priceSource = priceSource;
+            holding.marketState = marketState;
             holding.dataTime = dataTime;
             holding.manual = false;
             holding.error = null;
@@ -786,7 +815,14 @@
                 let note = '';
                 if (h.error) note = `<div class="price-note error">${h.error}</div>`;
                 else if (h.manual) note = `<div class="price-note manual">手動入力</div>`;
-                else if (h.isPreviousClose) note = `<div class="price-note prevclose">休場中・前日終値</div>`;
+                else if (h.priceSource === 'pre') note = `<div class="price-note prevclose">寄付前気配値</div>`;
+                else if (h.priceSource === 'post') note = `<div class="price-note prevclose">時間外気配値</div>`;
+                else if (h.isPreviousClose) note = `<div class="price-note prevclose">前日終値（推定）</div>`;
+                else if (h.marketState && h.marketState !== 'REGULAR') note = `<div class="price-note prevclose">休場中（直近の終値）</div>`;
+
+                // marketStateの実際の値をそのまま出す。「営業日なのに前日終値のまま」
+                // という場合、ここを見ればYahoo側がどう判定しているかが直接分かる。
+                const stateNote = h.marketState ? `<div class="price-note">状態: ${h.marketState}</div>` : '';
 
                 // 実際に取得処理が動いているかを確認できるよう、最終取得/試行時刻を出す。
                 // 「最終取得」（＝リクエストした時刻）が更新され続けているのに「データ時刻」
@@ -823,6 +859,7 @@
                             ${note}
                             ${changeHtml}
                             ${fetchedNote}
+                            ${stateNote}
                         </div>
                     </td>
                     <td>${formatYen(jpyValue)}</td>
