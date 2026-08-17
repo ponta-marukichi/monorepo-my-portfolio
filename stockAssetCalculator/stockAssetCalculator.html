@@ -610,7 +610,13 @@
         }
 
         if (typeof price !== 'number') throw new Error('価格データなし');
-        return { price, currency: meta.currency || null, marketState, isPreviousClose };
+
+        // regularMarketTime はこの価格が実際にいつ時点のものかを示す
+        // Yahoo側のタイムスタンプ（秒）。取得処理自体は成功しているのに
+        // 値が更新されない場合、これが古いままかどうかで原因を切り分けられる。
+        const dataTime = typeof meta.regularMarketTime === 'number' ? meta.regularMarketTime * 1000 : null;
+
+        return { price, currency: meta.currency || null, marketState, isPreviousClose, dataTime };
     }
 
     async function fetchQuote(symbol) {
@@ -630,12 +636,12 @@
         // 為替市場のライブレート（Yahoo Financeの USD/JPY ティッカー）を優先して取得する
         try {
             const quote = await fetchQuote('JPY=X');
-            return { rate: quote.price, isPreviousClose: quote.isPreviousClose };
+            return { rate: quote.price, isPreviousClose: quote.isPreviousClose, dataTime: quote.dataTime };
         } catch (yahooErr) {
             const data = await fetchJson('https://api.exchangerate-api.com/v4/latest/USD');
             const jpy = data?.rates?.JPY;
             if (typeof jpy !== 'number') throw new Error('レート取得に失敗しました');
-            return { rate: jpy, isPreviousClose: false };
+            return { rate: jpy, isPreviousClose: false, dataTime: null };
         }
     }
 
@@ -643,12 +649,13 @@
         if (rateIsManual) return;
         rateStatusEl.textContent = '取得中...';
         try {
-            const { rate, isPreviousClose } = await fetchUsdJpyRate();
+            const { rate, isPreviousClose, dataTime } = await fetchUsdJpyRate();
             usdJpyRate = rate;
             rateValueEl.textContent = `1 USD = ${usdJpyRate.toFixed(2)} 円`;
+            const dataTimeStr = dataTime ? ` / データ時刻: ${formatJstLabel(dataTime)}` : '';
             rateStatusEl.textContent = isPreviousClose
-                ? `更新: ${new Date().toLocaleTimeString('ja-JP')}（為替市場休止中のため前回終値）`
-                : `更新: ${new Date().toLocaleTimeString('ja-JP')}`;
+                ? `更新: ${formatTime(Date.now())}（為替市場休止中のため前回終値）${dataTimeStr}`
+                : `更新: ${formatTime(Date.now())}${dataTimeStr}`;
             localStorage.setItem(RATE_CACHE_KEY, JSON.stringify({ rate: usdJpyRate, ts: Date.now() }));
         } catch (err) {
             rateStatusEl.textContent = `取得失敗（試行: ${formatTime(Date.now())}）。下の欄に手動入力してください。`;
@@ -712,10 +719,11 @@
         if (!holding) return;
         try {
             const symbol = normalizeSymbol(holding.market, holding.code);
-            const { price, currency, isPreviousClose } = await fetchQuote(symbol);
+            const { price, currency, isPreviousClose, dataTime } = await fetchQuote(symbol);
             holding.price = price;
             holding.currency = currency || holding.currency;
             holding.isPreviousClose = isPreviousClose;
+            holding.dataTime = dataTime;
             holding.manual = false;
             holding.error = null;
             holding.lastFetchedAt = Date.now();
@@ -783,12 +791,16 @@
                 else if (h.manual) note = `<div class="price-note manual">手動入力</div>`;
                 else if (h.isPreviousClose) note = `<div class="price-note prevclose">休場中・前日終値</div>`;
 
-                // 実際に取得処理が動いているかを確認できるよう、最終取得/試行時刻を出す
+                // 実際に取得処理が動いているかを確認できるよう、最終取得/試行時刻を出す。
+                // 「最終取得」（＝リクエストした時刻）が更新され続けているのに「データ時刻」
+                // （＝返ってきた価格が実際にいつ時点のものか）が変わらない場合、取得先
+                // （Yahoo/プロキシ）側で古いレスポンスが返され続けていることが分かる。
                 let fetchedNote = '';
                 if (h.error && h.lastAttemptAt) {
                     fetchedNote = `<div class="price-note">最終試行: ${formatTime(h.lastAttemptAt)}</div>`;
                 } else if (h.lastFetchedAt) {
-                    fetchedNote = `<div class="price-note">最終取得: ${formatTime(h.lastFetchedAt)}</div>`;
+                    const dataTimeStr = h.dataTime ? ` / データ時刻: ${formatJstLabel(h.dataTime)}` : '';
+                    fetchedNote = `<div class="price-note">最終取得: ${formatTime(h.lastFetchedAt)}${dataTimeStr}</div>`;
                 }
 
                 // 総資産と同じ基準（日本時間6:00/15:30の直近チェックポイント）で銘柄ごとの前日比も記録・表示する
