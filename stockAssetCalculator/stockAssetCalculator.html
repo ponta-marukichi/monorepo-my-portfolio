@@ -597,7 +597,31 @@
         return `${url}${sep}_=${Date.now()}`;
     }
 
-    async function fetchJson(url, timeoutMs = 8000) {
+    function sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    // 無料の公開CORSプロキシは短時間に大量のリクエストを投げると429などで
+    // 弾かれる。銘柄ごとの取得を一斉に走らせると、最初の1〜2件だけ成功して
+    // 残りが全滅する。そこで全リクエストを1本のキューに通し、必ず一定間隔を
+    // 空けて順番に送る。
+    const REQUEST_GAP_MS = 400;
+    let requestChain = Promise.resolve();
+    let lastRequestAt = 0;
+
+    function enqueueRequest(task) {
+        const run = requestChain.then(async () => {
+            const wait = lastRequestAt + REQUEST_GAP_MS - Date.now();
+            if (wait > 0) await sleep(wait);
+            lastRequestAt = Date.now();
+            return task();
+        });
+        // 1件の失敗で後続のキューが止まらないようにする
+        requestChain = run.then(() => {}, () => {});
+        return run;
+    }
+
+    async function fetchJsonRaw(url, timeoutMs = 10000) {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
@@ -609,16 +633,29 @@
         }
     }
 
+    function fetchJson(url, timeoutMs) {
+        return enqueueRequest(() => fetchJsonRaw(url, timeoutMs));
+    }
+
     // 無料の公開CORSプロキシは1つに依存すると、そのプロキシ自体が不調・
     // レスポンスをキャッシュしている場合に丸ごと止まって見える。
     // 複数の候補を順番に試し、最初に成功したものを使う。
+    const PROXY_BUILDERS = [
+        url => url,
+        url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+        url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+        url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+    ];
+
+    // 直前に成功した経路を覚えておき、次回はそこから試す。毎回ダメな候補を
+    // 先頭から順に叩き直すと、その分だけ余計にレート制限を踏んでしまう。
+    let preferredProxyIndex = 0;
+
     function buildFetchCandidates(targetUrl) {
-        return [
-            targetUrl,
-            `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`,
-            `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`,
-            `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`,
-        ];
+        return PROXY_BUILDERS.map((_, offset) => {
+            const index = (preferredProxyIndex + offset) % PROXY_BUILDERS.length;
+            return { index, url: PROXY_BUILDERS[index](targetUrl) };
+        });
     }
 
     // 日足の時系列から、直近セッションの終値とその営業日を取り出す。
@@ -727,12 +764,20 @@
         // 使えなかった」とみなして次の候補を試す（fetchとparseを同じループ内で
         // 行う）。fetchだけ成功した時点で確定してしまうと、後続のより信頼できる
         // 候補を試さずに諦めてしまうバグになる。
-        for (const url of buildFetchCandidates(yahooUrl)) {
-            try {
-                const data = await fetchJson(url);
-                return parseQuoteMeta(data);
-            } catch (err) {
-                console.warn(`[stockAssetCalculator] 取得失敗 (${symbol}):`, url.split('?')[0], err.message);
+        //
+        // 全候補が失敗した場合、レート制限が一時的に解けるのを待って再挑戦する。
+        const MAX_ROUNDS = 2;
+        for (let round = 0; round < MAX_ROUNDS; round++) {
+            if (round > 0) await sleep(1500 * round);
+            for (const { index, url } of buildFetchCandidates(yahooUrl)) {
+                try {
+                    const data = await fetchJson(url);
+                    const quote = parseQuoteMeta(data);
+                    preferredProxyIndex = index; // 次回はこの経路から試す
+                    return quote;
+                } catch (err) {
+                    console.warn(`[stockAssetCalculator] 取得失敗 (${symbol}):`, url.split('?')[0], err.message);
+                }
             }
         }
         throw new Error('株価取得に失敗しました');
@@ -851,7 +896,11 @@
     }
 
     async function refreshAll() {
-        await Promise.all(holdings.map(h => refreshHolding(h.id)));
+        // Promise.allで一斉に投げると無料プロキシのレート制限に一気に引っかかり、
+        // 最初の1〜2銘柄だけ成功して残りが全滅する。1銘柄ずつ順番に取得する。
+        for (const holding of [...holdings]) {
+            await refreshHolding(holding.id);
+        }
     }
 
     function removeHolding(id) {
@@ -923,7 +972,12 @@
                 // （Yahoo/プロキシ）側で古いレスポンスが返され続けていることが分かる。
                 let fetchedNote = '';
                 if (h.error && h.lastAttemptAt) {
-                    fetchedNote = `<div class="price-note">最終試行: ${formatTime(h.lastAttemptAt)}</div>`;
+                    // 失敗時、欄に残っている数値は前回取得できたときの値なので
+                    // それが「今の値ではない」ことが分かるようにしておく
+                    const staleStr = h.lastFetchedAt
+                        ? ` / 表示中は前回値（${formatTime(h.lastFetchedAt)}取得）`
+                        : '';
+                    fetchedNote = `<div class="price-note">最終試行: ${formatTime(h.lastAttemptAt)}${staleStr}</div>`;
                 } else if (h.lastFetchedAt) {
                     const dataTimeStr = h.dataTime ? ` / データ時刻: ${formatJstLabel(h.dataTime)}` : '';
                     fetchedNote = `<div class="price-note">最終取得: ${formatTime(h.lastFetchedAt)}${dataTimeStr}</div>`;
