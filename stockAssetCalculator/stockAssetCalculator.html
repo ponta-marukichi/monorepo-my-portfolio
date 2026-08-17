@@ -249,6 +249,23 @@
         flex-wrap: wrap;
     }
 
+    .toolbar-right {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+
+    .auto-refresh-toggle {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 13px;
+        color: var(--text-dim);
+        cursor: pointer;
+        user-select: none;
+    }
+
     .hint {
         font-size: 12px;
         color: var(--text-dim);
@@ -312,7 +329,14 @@
     <div class="panel">
         <div class="toolbar">
             <h2 style="margin:0;">保有銘柄</h2>
-            <button type="button" class="secondary" id="refreshAllBtn">すべての株価を再取得</button>
+            <div class="toolbar-right">
+                <label class="auto-refresh-toggle">
+                    <input type="checkbox" id="autoRefreshToggle" checked>
+                    自動更新
+                </label>
+                <span class="rate-status" id="autoRefreshStatus"></span>
+                <button type="button" class="secondary" id="refreshAllBtn">すべての株価を再取得</button>
+            </div>
         </div>
         <table>
             <thead>
@@ -367,11 +391,21 @@
     const CHECKPOINT_RETENTION_MS = 14 * 24 * 60 * 60 * 1000; // 14日分保持
     const JST_OFFSET_MS = 9 * 60 * 60 * 1000; // 日本標準時はUTC+9固定（サマータイムなし）
 
+    // ザラ場中（取引時間中）はリアルタイムに近い値を出すため短い間隔で更新する。
+    // 全銘柄が休場中のときは、寄り付きを拾えれば十分なので間隔を長くして
+    // 無料プロキシへのリクエストを抑える。
+    const LIVE_REFRESH_MS = 60 * 1000;
+    const IDLE_REFRESH_MS = 10 * 60 * 1000;
+
     /** @type {{id:string, market:'JP'|'US', code:string, quantity:number, price:number|null, currency:string, manual:boolean, error:string|null}[]} */
     let holdings = loadHoldings();
     let cash = loadCash();
     let usdJpyRate = null;
     let rateIsManual = false;
+    let rateMarketState = null;
+    let autoRefreshEnabled = true;
+    let autoRefreshTimer = null;
+    let isRefreshing = false;
 
     const holdingsBody = document.getElementById('holdingsBody');
     const addForm = document.getElementById('addForm');
@@ -386,6 +420,8 @@
     const totalGrandEl = document.getElementById('totalGrand');
     const totalChangeEl = document.getElementById('totalChange');
     const checkpointNoteEl = document.getElementById('checkpointNote');
+    const autoRefreshToggleEl = document.getElementById('autoRefreshToggle');
+    const autoRefreshStatusEl = document.getElementById('autoRefreshStatus');
 
     function loadHoldings() {
         try {
@@ -660,12 +696,17 @@
         // 為替市場のライブレート（Yahoo Financeの USD/JPY ティッカー）を優先して取得する
         try {
             const quote = await fetchQuote('JPY=X');
-            return { rate: quote.price, isPreviousClose: quote.isPreviousClose, dataTime: quote.dataTime };
+            return {
+                rate: quote.price,
+                isPreviousClose: quote.isPreviousClose,
+                dataTime: quote.dataTime,
+                marketState: quote.marketState,
+            };
         } catch (yahooErr) {
             const data = await fetchJson('https://api.exchangerate-api.com/v4/latest/USD');
             const jpy = data?.rates?.JPY;
             if (typeof jpy !== 'number') throw new Error('レート取得に失敗しました');
-            return { rate: jpy, isPreviousClose: false, dataTime: null };
+            return { rate: jpy, isPreviousClose: false, dataTime: null, marketState: null };
         }
     }
 
@@ -673,13 +714,15 @@
         if (rateIsManual) return;
         rateStatusEl.textContent = '取得中...';
         try {
-            const { rate, isPreviousClose, dataTime } = await fetchUsdJpyRate();
+            const { rate, isPreviousClose, dataTime, marketState } = await fetchUsdJpyRate();
             usdJpyRate = rate;
+            rateMarketState = marketState;
             rateValueEl.textContent = `1 USD = ${usdJpyRate.toFixed(2)} 円`;
             const dataTimeStr = dataTime ? ` / データ時刻: ${formatJstLabel(dataTime)}` : '';
+            const stateStr = marketState ? ` / 状態: ${marketState}` : '';
             rateStatusEl.textContent = isPreviousClose
-                ? `更新: ${formatTime(Date.now())}（為替市場休止中のため前回終値）${dataTimeStr}`
-                : `更新: ${formatTime(Date.now())}${dataTimeStr}`;
+                ? `更新: ${formatTime(Date.now())}（為替市場休止中のため前回終値）${dataTimeStr}${stateStr}`
+                : `更新: ${formatTime(Date.now())}${dataTimeStr}${stateStr}`;
             localStorage.setItem(RATE_CACHE_KEY, JSON.stringify({ rate: usdJpyRate, ts: Date.now() }));
         } catch (err) {
             rateStatusEl.textContent = `取得失敗（試行: ${formatTime(Date.now())}）。下の欄に手動入力してください。`;
@@ -913,7 +956,10 @@
         document.getElementById('codeInput').value = '';
     });
 
-    document.getElementById('refreshAllBtn').addEventListener('click', refreshAll);
+    document.getElementById('refreshAllBtn').addEventListener('click', () => {
+        // 手動更新した直後にまた自動更新が走らないよう、間隔を測り直す
+        runAutoRefresh().then(scheduleAutoRefresh);
+    });
 
     cashJpyInputEl.addEventListener('change', () => {
         const v = parseFloat(cashJpyInputEl.value);
@@ -941,13 +987,86 @@
         }, delay);
     }
 
+    // --- ザラ場中の自動更新 ---
+
+    // 保有銘柄または為替のいずれかが取引時間中（REGULAR）かどうか。
+    // 気配値が動くPRE/POSTも「値が動く時間帯」として扱う。
+    function isAnyMarketLive() {
+        const liveStates = ['REGULAR', 'PRE', 'POST', 'POSTPOST'];
+        if (holdings.some(h => liveStates.includes(h.marketState))) return true;
+        return liveStates.includes(rateMarketState);
+    }
+
+    function currentRefreshInterval() {
+        return isAnyMarketLive() ? LIVE_REFRESH_MS : IDLE_REFRESH_MS;
+    }
+
+    function updateAutoRefreshStatus(nextRunAt) {
+        if (!autoRefreshEnabled) {
+            autoRefreshStatusEl.textContent = '自動更新オフ';
+            return;
+        }
+        const intervalLabel = isAnyMarketLive()
+            ? `${Math.round(LIVE_REFRESH_MS / 1000)}秒ごと（ザラ場中）`
+            : `${Math.round(IDLE_REFRESH_MS / 60000)}分ごと（休場中）`;
+        const nextLabel = nextRunAt ? ` / 次回 ${formatTime(nextRunAt)}` : '';
+        autoRefreshStatusEl.textContent = `${intervalLabel}${nextLabel}`;
+    }
+
+    async function runAutoRefresh() {
+        // 前回の取得がまだ終わっていない場合は重ねて走らせない
+        if (isRefreshing) return;
+        isRefreshing = true;
+        try {
+            await refreshRate();
+            await refreshAll();
+        } finally {
+            isRefreshing = false;
+        }
+    }
+
+    function scheduleAutoRefresh() {
+        clearTimeout(autoRefreshTimer);
+        if (!autoRefreshEnabled) {
+            updateAutoRefreshStatus(null);
+            return;
+        }
+        const interval = currentRefreshInterval();
+        const nextRunAt = Date.now() + interval;
+        updateAutoRefreshStatus(nextRunAt);
+        autoRefreshTimer = setTimeout(async () => {
+            // 非表示タブでは無料プロキシへの無駄なリクエストを避けて待機する
+            // （再表示時にすぐ取得し直す）
+            if (!document.hidden) await runAutoRefresh();
+            scheduleAutoRefresh();
+        }, interval);
+    }
+
+    autoRefreshToggleEl.addEventListener('change', () => {
+        autoRefreshEnabled = autoRefreshToggleEl.checked;
+        if (autoRefreshEnabled) {
+            runAutoRefresh().then(scheduleAutoRefresh);
+        } else {
+            clearTimeout(autoRefreshTimer);
+            updateAutoRefreshStatus(null);
+        }
+    });
+
+    // タブに戻ってきたら、待機中の間隔を待たずに最新値を取り直す
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && autoRefreshEnabled) {
+            runAutoRefresh().then(scheduleAutoRefresh);
+        }
+    });
+
     (async function init() {
         cashJpyInputEl.value = cash.jpy || '';
         cashUsdInputEl.value = cash.usd || '';
+        autoRefreshEnabled = autoRefreshToggleEl.checked;
         render();
-        await refreshRate();
-        await refreshAll();
+        await runAutoRefresh();
         scheduleNextCheckpointRefresh();
+        scheduleAutoRefresh();
     })();
 })();
 </script>
