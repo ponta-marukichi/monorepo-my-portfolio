@@ -418,6 +418,10 @@
         return '¥' + Math.round(n).toLocaleString('ja-JP');
     }
 
+    function formatTime(ts) {
+        return new Date(ts).toLocaleTimeString('ja-JP');
+    }
+
     // --- 前日比チェックポイント（日本時間 6:00 / 15:30 基準） ---
     //
     // このアプリは常駐サーバーを持たないため、6:00/15:30ちょうどの資産額を
@@ -552,10 +556,40 @@
         return `${url}${sep}_=${Date.now()}`;
     }
 
-    async function fetchJson(url) {
-        const res = await fetch(withCacheBuster(url), { cache: 'no-store' });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
+    async function fetchJson(url, timeoutMs = 8000) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const res = await fetch(withCacheBuster(url), { cache: 'no-store', signal: controller.signal });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return await res.json();
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    // 無料の公開CORSプロキシは1つに依存すると、そのプロキシ自体が不調・
+    // レスポンスをキャッシュしている場合に丸ごと止まって見える。
+    // 複数の候補を順番に試し、最初に成功したものを使う。
+    function buildFetchCandidates(targetUrl) {
+        return [
+            targetUrl,
+            `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`,
+            `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`,
+            `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`,
+        ];
+    }
+
+    async function fetchJsonWithFallback(targetUrl) {
+        let lastError = new Error('取得に失敗しました');
+        for (const url of buildFetchCandidates(targetUrl)) {
+            try {
+                return await fetchJson(url);
+            } catch (err) {
+                lastError = err;
+            }
+        }
+        throw lastError;
     }
 
     function parseQuoteMeta(data) {
@@ -580,21 +614,15 @@
     }
 
     async function fetchQuote(symbol) {
-        // プロキシ（allorigins.win）はurlパラメータの値をキーにレスポンスを
-        // キャッシュすることがあるため、外側だけでなくラップする前のYahoo URL
-        // 自体にもキャッシュバスターを付けて「毎回別のURL」として扱わせる
+        // プロキシはurlパラメータの値をキーにレスポンスをキャッシュすることが
+        // あるため、ラップする前のYahoo URL自体にもキャッシュバスターを付けて
+        // 「毎回別のURL」として扱わせる
         const yahooUrl = withCacheBuster(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
         try {
-            const data = await fetchJson(yahooUrl);
+            const data = await fetchJsonWithFallback(yahooUrl);
             return parseQuoteMeta(data);
-        } catch (directErr) {
-            try {
-                const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(yahooUrl)}`;
-                const data = await fetchJson(proxyUrl);
-                return parseQuoteMeta(data);
-            } catch (proxyErr) {
-                throw new Error('株価取得に失敗しました');
-            }
+        } catch (err) {
+            throw new Error('株価取得に失敗しました');
         }
     }
 
@@ -623,7 +651,7 @@
                 : `更新: ${new Date().toLocaleTimeString('ja-JP')}`;
             localStorage.setItem(RATE_CACHE_KEY, JSON.stringify({ rate: usdJpyRate, ts: Date.now() }));
         } catch (err) {
-            rateStatusEl.textContent = '取得失敗。下の欄に手動入力してください。';
+            rateStatusEl.textContent = `取得失敗（試行: ${formatTime(Date.now())}）。下の欄に手動入力してください。`;
             const cached = loadCachedRate();
             if (cached && usdJpyRate === null) {
                 usdJpyRate = cached.rate;
@@ -690,8 +718,10 @@
             holding.isPreviousClose = isPreviousClose;
             holding.manual = false;
             holding.error = null;
+            holding.lastFetchedAt = Date.now();
         } catch (err) {
             holding.error = err.message || '取得失敗';
+            holding.lastAttemptAt = Date.now();
         }
         saveHoldings();
         render();
@@ -753,6 +783,14 @@
                 else if (h.manual) note = `<div class="price-note manual">手動入力</div>`;
                 else if (h.isPreviousClose) note = `<div class="price-note prevclose">休場中・前日終値</div>`;
 
+                // 実際に取得処理が動いているかを確認できるよう、最終取得/試行時刻を出す
+                let fetchedNote = '';
+                if (h.error && h.lastAttemptAt) {
+                    fetchedNote = `<div class="price-note">最終試行: ${formatTime(h.lastAttemptAt)}</div>`;
+                } else if (h.lastFetchedAt) {
+                    fetchedNote = `<div class="price-note">最終取得: ${formatTime(h.lastFetchedAt)}</div>`;
+                }
+
                 // 総資産と同じ基準（日本時間6:00/15:30の直近チェックポイント）で銘柄ごとの前日比も記録・表示する
                 let changeHtml = '';
                 if (h.price !== null && !h.error && !h.manual) {
@@ -775,6 +813,7 @@
                             <input type="number" class="price-input" value="${h.price !== null ? h.price : ''}" min="0" step="0.01" placeholder="${priceLabel === '-' ? '未取得' : ''}">
                             ${note}
                             ${changeHtml}
+                            ${fetchedNote}
                         </div>
                     </td>
                     <td>${formatYen(jpyValue)}</td>
