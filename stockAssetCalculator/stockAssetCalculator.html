@@ -503,6 +503,11 @@
         return nextJstMs - JST_OFFSET_MS;
     }
 
+    function formatJstDate(realMs) {
+        const jst = toJstWallClock(realMs);
+        return `${jst.getUTCMonth() + 1}/${jst.getUTCDate()}`;
+    }
+
     function formatJstLabel(realMs) {
         const jst = toJstWallClock(realMs);
         const mm = jst.getUTCMonth() + 1;
@@ -616,40 +621,79 @@
         ];
     }
 
+    // 日足の時系列から、直近セッションの終値とその営業日を取り出す。
+    // metaのregularMarketPrice/previousCloseだけを見ていると「その値が
+    // どの営業日のものか」を判別できず、前営業日の終値を掴んでいても
+    // 気づけない。日足バーを直接読めば、値と営業日が必ず対応する。
+    function extractSessionCloses(result) {
+        const timestamps = Array.isArray(result?.timestamp) ? result.timestamp : [];
+        const closes = result?.indicators?.quote?.[0]?.close;
+        const bars = [];
+        if (Array.isArray(closes)) {
+            for (let i = 0; i < closes.length; i++) {
+                if (typeof closes[i] === 'number') {
+                    bars.push({ close: closes[i], time: typeof timestamps[i] === 'number' ? timestamps[i] : null });
+                }
+            }
+        }
+        return {
+            latest: bars.length > 0 ? bars[bars.length - 1] : null,
+            previous: bars.length > 1 ? bars[bars.length - 2] : null,
+        };
+    }
+
     function parseQuoteMeta(data) {
-        const meta = data?.chart?.result?.[0]?.meta;
+        const result = data?.chart?.result?.[0];
+        const meta = result?.meta;
         if (!meta) throw new Error('価格データなし');
 
         const marketState = meta.marketState || 'REGULAR';
-        let price = meta.regularMarketPrice;
-        let priceSource = 'regular';
-        let dataTimeSeconds = meta.regularMarketTime;
+        const { latest: latestBar, previous: previousBar } = extractSessionCloses(result);
 
-        // regularMarketPriceは取引時間中はライブ価格、休場中（CLOSEDなど）は
-        // 直近の終値（その日の取引がすでに終わっていれば「当日終値」）を
-        // 保持し続ける。previousCloseは「1つ前のセッション＝前日」の終値
-        // なので、休場中だからといってprevious Closeに置き換えると実際より
-        // 1営業日古い値になってしまう。そのため休場中でもregularMarketPrice
-        // をそのまま使い、previousCloseはregularMarketPrice自体が取得できな
-        // かった場合の最終手段としてのみ使う。
-        //
-        // ただしPRE（寄付前気配）/POST（時間外気配）中は専用の価格・時刻
-        // フィールドの方がregularMarketPriceより新しいので、それらを優先する。
-        if (marketState === 'PRE' && typeof meta.preMarketPrice === 'number') {
+        let price = null;
+        let priceSource = null;
+        let dataTimeSeconds = null;
+
+        if (marketState === 'REGULAR' && typeof meta.regularMarketPrice === 'number') {
+            // ザラ場中はライブ価格
+            price = meta.regularMarketPrice;
+            priceSource = 'regular';
+            dataTimeSeconds = meta.regularMarketTime ?? null;
+        } else if (marketState === 'PRE' && typeof meta.preMarketPrice === 'number') {
             price = meta.preMarketPrice;
             priceSource = 'pre';
-            dataTimeSeconds = meta.preMarketTime ?? dataTimeSeconds;
+            dataTimeSeconds = meta.preMarketTime ?? null;
         } else if ((marketState === 'POST' || marketState === 'POSTPOST') && typeof meta.postMarketPrice === 'number') {
             price = meta.postMarketPrice;
             priceSource = 'post';
-            dataTimeSeconds = meta.postMarketTime ?? dataTimeSeconds;
+            dataTimeSeconds = meta.postMarketTime ?? null;
+        } else {
+            // 休場中は「直近セッションの終値」＝その日の取引が終わっていれば当日終値。
+            // 日足バーとmeta.regularMarketPriceの両方を候補にして、タイムスタンプが
+            // 新しい方を採用する（引け直後は日足バーの反映がmetaより遅れることがあり、
+            // 逆にmetaが古いまま残ることもあるため、どちらか一方に決め打ちしない）。
+            const candidates = [];
+            if (latestBar) {
+                candidates.push({ price: latestBar.close, time: latestBar.time, source: 'sessionClose' });
+            }
+            if (typeof meta.regularMarketPrice === 'number') {
+                candidates.push({ price: meta.regularMarketPrice, time: meta.regularMarketTime ?? null, source: 'regular' });
+            }
+            candidates.sort((a, b) => (b.time ?? 0) - (a.time ?? 0));
+            if (candidates.length > 0) {
+                price = candidates[0].price;
+                priceSource = candidates[0].source;
+                dataTimeSeconds = candidates[0].time;
+            }
         }
 
         if (typeof price !== 'number') {
+            // 上記がすべて取れなかった場合の最終手段
             const prevClose = meta.previousClose ?? meta.chartPreviousClose;
             if (typeof prevClose === 'number') {
                 price = prevClose;
                 priceSource = 'previousClose';
+                dataTimeSeconds = previousBar?.time ?? null;
             }
         }
 
@@ -674,7 +718,9 @@
         // プロキシはurlパラメータの値をキーにレスポンスをキャッシュすることが
         // あるため、ラップする前のYahoo URL自体にもキャッシュバスターを付けて
         // 「毎回別のURL」として扱わせる
-        const yahooUrl = withCacheBuster(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
+        // range/intervalを明示して日足バーを取得する。これがないと時系列が
+        // 返らず、「その終値がどの営業日のものか」を判定できない。
+        const yahooUrl = withCacheBuster(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=5d&interval=1d`);
 
         // fetch自体は200で成功しても、中身がレート制限メッセージやエラーJSON
         // など有効な株価データでないプロキシもある。その場合も「このプロキシは
@@ -861,7 +907,11 @@
                 else if (h.priceSource === 'pre') note = `<div class="price-note prevclose">寄付前気配値</div>`;
                 else if (h.priceSource === 'post') note = `<div class="price-note prevclose">時間外気配値</div>`;
                 else if (h.isPreviousClose) note = `<div class="price-note prevclose">前日終値（推定）</div>`;
-                else if (h.marketState && h.marketState !== 'REGULAR') note = `<div class="price-note prevclose">休場中（直近の終値）</div>`;
+                else if (h.priceSource === 'sessionClose' || (h.marketState && h.marketState !== 'REGULAR')) {
+                    // どの営業日の終値なのかを日付付きで明示する
+                    const closeDate = h.dataTime ? `（${formatJstDate(h.dataTime)}）` : '';
+                    note = `<div class="price-note prevclose">休場中・終値${closeDate}</div>`;
+                }
 
                 // marketStateの実際の値をそのまま出す。「営業日なのに前日終値のまま」
                 // という場合、ここを見ればYahoo側がどう判定しているかが直接分かる。
