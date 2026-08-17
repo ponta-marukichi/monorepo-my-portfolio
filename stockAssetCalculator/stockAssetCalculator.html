@@ -961,12 +961,19 @@
         }
     }
 
-    function valueInJpy(holding) {
-        if (holding.price === null) return 0;
+    // 1株あたりの価格を円で返す。米国株は為替レートで換算する。
+    // レート未取得で換算できない場合は null。
+    function unitPriceInJpy(holding) {
+        if (holding.price === null) return null;
         if (holding.currency === 'USD') {
-            return usdJpyRate ? holding.price * holding.quantity * usdJpyRate : 0;
+            return usdJpyRate ? holding.price * usdJpyRate : null;
         }
-        return holding.price * holding.quantity;
+        return holding.price;
+    }
+
+    function valueInJpy(holding) {
+        const unit = unitPriceInJpy(holding);
+        return unit === null ? 0 : unit * holding.quantity;
     }
 
     function render() {
@@ -1011,16 +1018,25 @@
                     fetchedNote = `<div class="price-note">最終取得: ${formatTime(h.lastFetchedAt)}${dataTimeStr}</div>`;
                 }
 
-                // 総資産と同じ基準（日本時間6:00/15:30の直近チェックポイント）で銘柄ごとの前日比も記録・表示する
+                // 総資産と同じ基準（日本時間6:00/15:30の直近チェックポイント）で
+                // 銘柄ごとの前日比も記録・表示する。米国株はUSD建てのままだと
+                // 総資産の前日比と単位が揃わないので、円換算した1株あたりの
+                // 価格を基準値として記録し、円で表示する。
                 let changeHtml = '';
-                if (h.price !== null && !h.error && !h.manual) {
+                const unitJpy = unitPriceInJpy(h);
+                if (unitJpy !== null && !h.error && !h.manual) {
                     const symbol = normalizeSymbol(h.market, h.code);
-                    const change = updateCheckpointAndGetChange(symbol, h.price);
-                    const cls = change.diff > 0 ? 'positive' : (change.diff < 0 ? 'negative' : '');
-                    const title = change.isFresh
+                    const change = updateCheckpointAndGetChange(`${symbol}#jpy`, unitJpy);
+                    // 保有株数を後から変えても基準がずれないよう、記録は1株あたりの
+                    // 円価格で行い、表示額だけ現在の保有株数を掛ける
+                    const positionDiff = change.diff * h.quantity;
+                    const cls = positionDiff > 0 ? 'positive' : (positionDiff < 0 ? 'negative' : '');
+                    const baseTitle = change.isFresh
                         ? `基準: ${change.boundaryLabel} JST時点`
                         : `基準: ${change.boundaryLabel} JST（実際の記録は ${change.capturedLabel}）`;
-                    changeHtml = `<div class="price-change ${cls}" title="${title}">${formatPriceChange(change.diff, change.pct, h.currency)}</div>`;
+                    const perShare = formatPriceChange(change.diff, change.pct, 'JPY');
+                    const title = `${baseTitle} / 1株あたり ${perShare}`;
+                    changeHtml = `<div class="price-change ${cls}" title="${title}">${formatChange(positionDiff, change.pct)}</div>`;
                 }
 
                 return `
