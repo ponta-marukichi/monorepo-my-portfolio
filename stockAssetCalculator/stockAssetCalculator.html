@@ -389,8 +389,6 @@
     const STORAGE_KEY = 'stockAssetCalculator.holdings.v1';
     const CASH_STORAGE_KEY = 'stockAssetCalculator.cash.v1';
     const RATE_CACHE_KEY = 'stockAssetCalculator.rate.v1';
-    const CHECKPOINT_KEY = 'stockAssetCalculator.checkpoints.v1';
-    const CHECKPOINT_RETENTION_MS = 14 * 24 * 60 * 60 * 1000; // 14日分保持
     const JST_OFFSET_MS = 9 * 60 * 60 * 1000; // 日本標準時はUTC+9固定（サマータイムなし）
 
     // ザラ場中（取引時間中）はリアルタイムに近い値を出すため短い間隔で更新する。
@@ -403,17 +401,12 @@
     let holdings = loadHoldings();
     let cash = loadCash();
     let usdJpyRate = null;
+    let usdJpyPrevRate = null; // 前営業日終値のUSD/JPY（円換算の前日比に使う）
     let rateIsManual = false;
     let rateMarketState = null;
     let autoRefreshEnabled = true;
     let autoRefreshTimer = null;
     let isRefreshing = false;
-
-    // このセッションで実際に取得に成功した銘柄のid。
-    // localStorageから復元した価格は「前回の値」であって最新ではないため、
-    // それを前日比の基準値として記録してしまわないように区別する。
-    const freshlyFetchedIds = new Set();
-    let hasCompletedInitialRefresh = false;
 
     const holdingsBody = document.getElementById('holdingsBody');
     const addForm = document.getElementById('addForm');
@@ -466,49 +459,9 @@
         return new Date(ts).toLocaleTimeString('ja-JP');
     }
 
-    // --- 前日比チェックポイント（日本時間 6:00 / 15:30 基準） ---
-    //
-    // このアプリは常駐サーバーを持たないため、6:00/15:30ちょうどの資産額を
-    // 確実に記録することはできない。その代わり、各区間（[6:00,15:30) と
-    // [15:30,翌6:00)）で最初に画面を開いた/更新したタイミングの資産額を
-    // その区間の基準値として記録し、以後の比較に使う。
-
     function toJstWallClock(realMs) {
         // UTC+9固定のためgetUTC*系を使って日本時間の年月日時分を取り出す
         return new Date(realMs + JST_OFFSET_MS);
-    }
-
-    // 指定時刻（実UTC ms）から見て直近（以前）のチェックポイント境界を実UTC msで返す
-    function getLatestCheckpointBoundary(nowRealMs = Date.now()) {
-        const jst = toJstWallClock(nowRealMs);
-        const y = jst.getUTCFullYear(), m = jst.getUTCMonth(), d = jst.getUTCDate();
-        const today6 = Date.UTC(y, m, d, 6, 0, 0, 0);
-        const today1530 = Date.UTC(y, m, d, 15, 30, 0, 0);
-        const jstMs = jst.getTime();
-
-        let boundaryJstMs;
-        if (jstMs >= today1530) {
-            boundaryJstMs = today1530;
-        } else if (jstMs >= today6) {
-            boundaryJstMs = today6;
-        } else {
-            boundaryJstMs = today1530 - 24 * 60 * 60 * 1000; // 前日15:30
-        }
-        return boundaryJstMs - JST_OFFSET_MS;
-    }
-
-    // 次のチェックポイント境界（実UTC ms）を返す
-    function getNextCheckpointBoundary(nowRealMs = Date.now()) {
-        const jst = toJstWallClock(nowRealMs);
-        const y = jst.getUTCFullYear(), m = jst.getUTCMonth(), d = jst.getUTCDate();
-        const candidates = [
-            Date.UTC(y, m, d, 6, 0, 0, 0),
-            Date.UTC(y, m, d, 15, 30, 0, 0),
-            Date.UTC(y, m, d + 1, 6, 0, 0, 0),
-        ];
-        const jstMs = jst.getTime();
-        const nextJstMs = candidates.find(c => c > jstMs);
-        return nextJstMs - JST_OFFSET_MS;
     }
 
     function formatJstDate(realMs) {
@@ -523,63 +476,6 @@
         const hh = String(jst.getUTCHours()).padStart(2, '0');
         const mi = String(jst.getUTCMinutes()).padStart(2, '0');
         return `${mm}/${dd} ${hh}:${mi}`;
-    }
-
-    // チェックポイント記録はスコープ（'TOTAL' = 総資産、銘柄シンボル = 個別株価）ごとに保持する
-    // 構造: { [scope]: { [boundaryRealMs]: { value, capturedAt } } }
-    function loadCheckpointStore() {
-        try {
-            const raw = localStorage.getItem(CHECKPOINT_KEY);
-            return raw ? JSON.parse(raw) : {};
-        } catch {
-            return {};
-        }
-    }
-
-    function saveCheckpointStore(store) {
-        const cutoff = Date.now() - CHECKPOINT_RETENTION_MS;
-        for (const scope of Object.keys(store)) {
-            for (const key of Object.keys(store[scope])) {
-                if (Number(key) < cutoff) delete store[scope][key];
-            }
-            if (Object.keys(store[scope]).length === 0) delete store[scope];
-        }
-        localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(store));
-    }
-
-    // 指定スコープの現在値と、直近チェックポイントとの差分を返す。
-    //
-    // record=false のときは基準値の記録を行わず、既存の基準がなければ null を
-    // 返す。取得に失敗した銘柄（表示中の値が前回値）や手動入力の値で基準を
-    // 作ってしまうと、以後その古い値と比較し続けることになるため、基準の
-    // 記録は「新しく取得できた値」でのみ行う。
-    function getCheckpointChange(scope, currentValue, { record }) {
-        const boundaryRealMs = getLatestCheckpointBoundary();
-        const key = String(boundaryRealMs);
-        const store = loadCheckpointStore();
-        if (!store[scope]) store[scope] = {};
-
-        if (!store[scope][key]) {
-            if (!record) return null;
-            store[scope][key] = { value: currentValue, capturedAt: Date.now() };
-            saveCheckpointStore(store);
-        }
-
-        const ref = store[scope][key];
-        const diff = currentValue - ref.value;
-        const pct = ref.value !== 0 ? (diff / ref.value) * 100 : 0;
-
-        return {
-            diff,
-            pct,
-            boundaryLabel: formatJstLabel(boundaryRealMs),
-            capturedLabel: formatJstLabel(ref.capturedAt),
-            isFresh: Math.abs(ref.capturedAt - boundaryRealMs) < 60 * 1000,
-        };
-    }
-
-    function updateCheckpointAndGetChange(scope, currentValue) {
-        return getCheckpointChange(scope, currentValue, { record: true });
     }
 
     function formatChange(diff, pct) {
@@ -785,6 +681,24 @@
         // これが古いままかどうかで原因を切り分けられる。
         const dataTime = typeof dataTimeSeconds === 'number' ? dataTimeSeconds * 1000 : null;
 
+        // 前日比の基準となる「前営業日の終値」を決める。
+        // 日足バーの最新が現在値と同じ営業日なら、その1本手前が前営業日。
+        // まだ当日のバーが立っていない（寄付前など）場合は最新バーが前営業日。
+        let prevBar = null;
+        if (latestBar) {
+            const sameDay = dataTime !== null && latestBar.time !== null
+                && formatJstDate(latestBar.time * 1000) === formatJstDate(dataTime);
+            prevBar = sameDay ? previousBar : latestBar;
+        }
+        let previousClose = prevBar?.close ?? null;
+        let previousCloseTime = prevBar?.time != null ? prevBar.time * 1000 : null;
+        if (typeof previousClose !== 'number') {
+            // 日足バーが足りない場合はmetaの前日終値を使う（日付は不明）
+            const metaPrev = meta.previousClose ?? meta.chartPreviousClose;
+            previousClose = typeof metaPrev === 'number' ? metaPrev : null;
+            previousCloseTime = null;
+        }
+
         return {
             price,
             currency: meta.currency || null,
@@ -792,6 +706,8 @@
             isPreviousClose: priceSource === 'previousClose',
             priceSource,
             dataTime,
+            previousClose,
+            previousCloseTime,
         };
     }
 
@@ -838,12 +754,13 @@
                 isPreviousClose: quote.isPreviousClose,
                 dataTime: quote.dataTime,
                 marketState: quote.marketState,
+                previousRate: quote.previousClose,
             };
         } catch (yahooErr) {
             const data = await fetchJson('https://api.exchangerate-api.com/v4/latest/USD');
             const jpy = data?.rates?.JPY;
             if (typeof jpy !== 'number') throw new Error('レート取得に失敗しました');
-            return { rate: jpy, isPreviousClose: false, dataTime: null, marketState: null };
+            return { rate: jpy, isPreviousClose: false, dataTime: null, marketState: null, previousRate: null };
         }
     }
 
@@ -851,8 +768,9 @@
         if (rateIsManual) return;
         rateStatusEl.textContent = '取得中...';
         try {
-            const { rate, isPreviousClose, dataTime, marketState } = await fetchUsdJpyRate();
+            const { rate, isPreviousClose, dataTime, marketState, previousRate } = await fetchUsdJpyRate();
             usdJpyRate = rate;
+            usdJpyPrevRate = previousRate;
             rateMarketState = marketState;
             rateValueEl.textContent = `1 USD = ${usdJpyRate.toFixed(2)} 円`;
             const dataTimeStr = dataTime ? ` / データ時刻: ${formatJstLabel(dataTime)}` : '';
@@ -923,21 +841,22 @@
         if (!holding) return;
         try {
             const symbol = normalizeSymbol(holding.market, holding.code);
-            const { price, currency, isPreviousClose, priceSource, marketState, dataTime } = await fetchQuote(symbol);
+            const quote = await fetchQuote(symbol);
+            const { price, currency, isPreviousClose, priceSource, marketState, dataTime } = quote;
             holding.price = price;
             holding.currency = currency || holding.currency;
             holding.isPreviousClose = isPreviousClose;
             holding.priceSource = priceSource;
             holding.marketState = marketState;
             holding.dataTime = dataTime;
+            holding.previousClose = quote.previousClose;
+            holding.previousCloseTime = quote.previousCloseTime;
             holding.manual = false;
             holding.error = null;
             holding.lastFetchedAt = Date.now();
-            freshlyFetchedIds.add(holding.id);
         } catch (err) {
             holding.error = err.message || '取得失敗';
             holding.lastAttemptAt = Date.now();
-            freshlyFetchedIds.delete(holding.id);
         }
         saveHoldings();
         render();
@@ -996,6 +915,31 @@
         return unit === null ? 0 : unit * holding.quantity;
     }
 
+    // 前営業日終値の1株あたり円価格。米国株は前営業日終値のレートで換算する
+    // （前営業日レートが取れない場合のみ現在レートで代用する）。
+    function prevUnitPriceInJpy(holding) {
+        if (typeof holding.previousClose !== 'number') return null;
+        if (holding.currency === 'USD') {
+            const rate = usdJpyPrevRate ?? usdJpyRate;
+            return rate ? holding.previousClose * rate : null;
+        }
+        return holding.previousClose;
+    }
+
+    // 前営業日終値からの増減。円建ての金額と変化率を返す。
+    function previousDayChange(holding) {
+        const now = unitPriceInJpy(holding);
+        const prev = prevUnitPriceInJpy(holding);
+        if (now === null || prev === null || prev === 0) return null;
+        const unitDiff = now - prev;
+        return {
+            diff: unitDiff * holding.quantity,
+            pct: (unitDiff / prev) * 100,
+            unitDiff,
+            prevValue: prev * holding.quantity,
+        };
+    }
+
     function render() {
         if (holdings.length === 0) {
             holdingsBody.innerHTML = '<tr class="empty-row"><td colspan="6">まだ銘柄が登録されていません</td></tr>';
@@ -1038,37 +982,26 @@
                     fetchedNote = `<div class="price-note">最終取得: ${formatTime(h.lastFetchedAt)}${dataTimeStr}</div>`;
                 }
 
-                // 総資産と同じ基準（日本時間6:00/15:30の直近チェックポイント）で
-                // 銘柄ごとの前日比も記録・表示する。米国株はUSD建てのままだと
-                // 総資産の前日比と単位が揃わないので、円換算した1株あたりの
-                // 価格を基準値として記録し、円で表示する。
-                //
-                // 取得に失敗している銘柄も、表示中の（前回取得できた）値を使って
-                // 前日比を出す。ただしその値で基準を作ると以後ずっと古い値と
-                // 比較し続けることになるので、基準の記録は取得成功時のみ行う。
+                // 前日比＝前営業日の終値からの増減。日足データに含まれる前営業日
+                // の終値をそのまま基準にするので、画面をいつ開いていたかに左右され
+                // ない。米国株は前営業日終値のレートで円換算した値と比較するため、
+                // 株価の動きと為替の動きの両方が円建ての増減に反映される。
                 let changeHtml = '';
-                const unitJpy = unitPriceInJpy(h);
-                if (unitJpy !== null) {
-                    const symbol = normalizeSymbol(h.market, h.code);
-                    const isLiveValue = freshlyFetchedIds.has(h.id) && !h.error && !h.manual;
-                    const change = getCheckpointChange(`${symbol}#jpy`, unitJpy, { record: isLiveValue });
-                    if (change) {
-                        // 保有株数を後から変えても基準がずれないよう、記録は1株あたりの
-                        // 円価格で行い、表示額だけ現在の保有株数を掛ける
-                        const positionDiff = change.diff * h.quantity;
-                        const cls = positionDiff > 0 ? 'positive' : (positionDiff < 0 ? 'negative' : '');
-                        const staleCls = isLiveValue ? '' : ' stale';
-                        const baseTitle = change.isFresh
-                            ? `基準: ${change.boundaryLabel} JST時点`
-                            : `基準: ${change.boundaryLabel} JST（実際の記録は ${change.capturedLabel}）`;
-                        const perShare = formatPriceChange(change.diff, change.pct, 'JPY');
-                        const staleTitle = isLiveValue ? '' : ' ※現在値が最新でないため参考値';
-                        const title = `${baseTitle} / 1株あたり ${perShare}${staleTitle}`;
-                        const suffix = isLiveValue ? '' : ' ※参考';
-                        changeHtml = `<div class="price-change ${cls}${staleCls}" title="${title}">${formatChange(positionDiff, change.pct)}${suffix}</div>`;
-                    } else {
-                        changeHtml = `<div class="price-change stale" title="この区間の基準値がまだ記録されていません">前日比 —（基準未取得）</div>`;
-                    }
+                const change = previousDayChange(h);
+                if (change) {
+                    const cls = change.diff > 0 ? 'positive' : (change.diff < 0 ? 'negative' : '');
+                    const isLiveValue = !h.error && !h.manual;
+                    const staleCls = isLiveValue ? '' : ' stale';
+                    const baseLabel = h.previousCloseTime
+                        ? `${formatJstDate(h.previousCloseTime)}の終値`
+                        : '前営業日終値';
+                    const unitLabel = formatPriceChange(change.unitDiff, change.pct, 'JPY');
+                    const staleTitle = isLiveValue ? '' : ' ※現在値が最新でないため参考値';
+                    const title = `基準: ${baseLabel} / 1株あたり ${unitLabel}${staleTitle}`;
+                    const suffix = isLiveValue ? '' : ' ※参考';
+                    changeHtml = `<div class="price-change ${cls}${staleCls}" title="${title}">${formatChange(change.diff, change.pct)}${suffix}</div>`;
+                } else if (h.price !== null) {
+                    changeHtml = `<div class="price-change stale" title="前営業日の終値が取得できていません">前日比 —</div>`;
                 }
 
                 return `
@@ -1104,22 +1037,36 @@
         totalCashEl.textContent = formatYen(totalCash);
         totalGrandEl.textContent = formatYen(totalGrand);
 
-        if (totalGrand > 0) {
-            // 初回取得が終わるまでは、localStorageから復元した古い評価額で
-            // 基準を作らないよう記録を保留する
-            const change = getCheckpointChange('TOTAL', totalGrand, { record: hasCompletedInitialRefresh });
+        // 総資産の前日比＝各銘柄の前営業日終値による評価額の合計との差。
+        // 円建て現金は前日比に影響しないが、ドル建て現金は為替の変動分だけ動く。
+        let prevTotal = 0;
+        let prevKnownCount = 0;
+        for (const h of holdings) {
+            const change = previousDayChange(h);
             if (change) {
-                totalChangeEl.textContent = formatChange(change.diff, change.pct);
-                totalChangeEl.classList.toggle('positive', change.diff > 0);
-                totalChangeEl.classList.toggle('negative', change.diff < 0);
-                checkpointNoteEl.textContent = change.isFresh
-                    ? `基準: ${change.boundaryLabel} JST時点`
-                    : `基準: ${change.boundaryLabel} JST（実際の記録は ${change.capturedLabel}）`;
+                prevTotal += change.prevValue;
+                prevKnownCount++;
             } else {
-                totalChangeEl.textContent = '—';
-                totalChangeEl.classList.remove('positive', 'negative');
-                checkpointNoteEl.textContent = '基準値の記録待ち';
+                // 前営業日終値が不明な銘柄は、増減なしとみなして合計に含める
+                prevTotal += valueInJpy(h);
             }
+        }
+        prevTotal += cash.jpy + ((usdJpyPrevRate ?? usdJpyRate) ? cash.usd * (usdJpyPrevRate ?? usdJpyRate) : 0);
+
+        if (totalGrand > 0 && prevTotal > 0 && (holdings.length === 0 || prevKnownCount > 0)) {
+            const diff = totalGrand - prevTotal;
+            const pct = (diff / prevTotal) * 100;
+            totalChangeEl.textContent = formatChange(diff, pct);
+            totalChangeEl.classList.toggle('positive', diff > 0);
+            totalChangeEl.classList.toggle('negative', diff < 0);
+            const partial = prevKnownCount < holdings.length
+                ? `（${holdings.length - prevKnownCount}銘柄は前営業日終値が未取得）`
+                : '';
+            checkpointNoteEl.textContent = `基準: 前営業日の終値${partial}`;
+        } else if (totalGrand > 0) {
+            totalChangeEl.textContent = '—';
+            totalChangeEl.classList.remove('positive', 'negative');
+            checkpointNoteEl.textContent = '前営業日の終値を取得中';
         } else {
             totalChangeEl.textContent = '-';
             totalChangeEl.classList.remove('positive', 'negative');
@@ -1162,18 +1109,6 @@
         saveCash();
         render();
     });
-
-    // タブを開いたままにしている場合、6:00/15:30 JSTの境界を跨いだ瞬間に
-    // 再取得して、その時点の資産額をチェックポイントとして記録する
-    function scheduleNextCheckpointRefresh() {
-        const delay = Math.max(1000, getNextCheckpointBoundary() - Date.now());
-        setTimeout(async () => {
-            rateIsManual = false;
-            await refreshRate();
-            await refreshAll();
-            scheduleNextCheckpointRefresh();
-        }, delay);
-    }
 
     // --- ザラ場中の自動更新 ---
 
@@ -1254,10 +1189,6 @@
         autoRefreshEnabled = autoRefreshToggleEl.checked;
         render();
         await runAutoRefresh();
-        // ここまでで一巡取得し終えたので、以後は総資産の基準値も記録してよい
-        hasCompletedInitialRefresh = true;
-        render();
-        scheduleNextCheckpointRefresh();
         scheduleAutoRefresh();
     })();
 })();
