@@ -183,10 +183,8 @@
     .state-lamp {
         display: inline-flex;
         align-items: center;
-        gap: 4px;
-        font-size: 10px;
-        color: var(--text-dim);
-        margin-top: 2px;
+        margin-top: 3px;
+        vertical-align: middle;
     }
 
     .state-lamp::before {
@@ -822,9 +820,9 @@
             const text = isPreviousClose
                 ? `更新: ${formatTime(Date.now())}（為替市場休止中のため前回終値）${dataTimeStr}`
                 : `更新: ${formatTime(Date.now())}${dataTimeStr}`;
-            // 取引状態は銘柄行と同じくランプで示す
+            // 取引状態は銘柄行と同じくランプのみで示す
             rateStatusEl.innerHTML = marketState
-                ? `${escapeHtml(text)} <span class="state-lamp${marketState === 'REGULAR' ? ' live' : ''}" title="取引状態: ${escapeHtml(marketState)}">${escapeHtml(marketState)}</span>`
+                ? `${escapeHtml(text)} <span class="state-lamp${marketState === 'REGULAR' ? ' live' : ''}" title="取引状態: ${escapeHtml(marketState)}"></span>`
                 : escapeHtml(text);
             localStorage.setItem(RATE_CACHE_KEY, JSON.stringify({ rate: usdJpyRate, ts: Date.now() }));
         } catch (err) {
@@ -1008,10 +1006,11 @@
                     note = `<div class="price-note prevclose">休場中・終値${closeDate}</div>`;
                 }
 
-                // 取引状態はランプで示す。取引時間中(REGULAR)なら緑、それ以外は赤。
+                // 取引状態はランプのみで示す。取引時間中(REGULAR)なら緑、それ以外は赤。
+                // 状態名はツールチップで確認できる。
                 const isLive = h.marketState === 'REGULAR';
                 const stateNote = h.marketState
-                    ? `<div class="state-lamp${isLive ? ' live' : ''}" title="取引状態: ${h.marketState}">${h.marketState}</div>`
+                    ? `<div class="state-lamp${isLive ? ' live' : ''}" title="取引状態: ${escapeHtml(h.marketState)}"></div>`
                     : '';
 
                 // 実際に取得処理が動いているかを確認できるよう、最終取得/試行時刻を出す。
