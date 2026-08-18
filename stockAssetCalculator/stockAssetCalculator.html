@@ -1,0 +1,1278 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>日本株・米国株 資産計算</title>
+<style>
+    :root {
+        --bg: #0f172a;
+        --panel: #1e293b;
+        --panel-alt: #273449;
+        --border: #334155;
+        --text: #e2e8f0;
+        --text-dim: #94a3b8;
+        --accent: #38bdf8;
+        --accent-strong: #0ea5e9;
+        --green: #4ade80;
+        --red: #f87171;
+        --yellow: #facc15;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+        margin: 0;
+        padding: 24px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", -apple-system, BlinkMacSystemFont, sans-serif;
+        line-height: 1.5;
+    }
+
+    .container {
+        max-width: 960px;
+        margin: 0 auto;
+    }
+
+    h1 {
+        font-size: 22px;
+        margin: 0 0 4px;
+    }
+
+    .subtitle {
+        color: var(--text-dim);
+        font-size: 13px;
+        margin-bottom: 20px;
+    }
+
+    .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 18px;
+        margin-bottom: 18px;
+    }
+
+    .panel h2 {
+        font-size: 15px;
+        margin: 0 0 12px;
+        color: var(--text-dim);
+        font-weight: 600;
+    }
+
+    .rate-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+
+    .rate-row .rate-value {
+        font-size: 18px;
+        font-weight: bold;
+        color: var(--accent);
+    }
+
+    .rate-row input[type="number"] {
+        width: 110px;
+    }
+
+    .rate-status {
+        font-size: 12px;
+        color: var(--text-dim);
+    }
+
+    form.add-form {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: flex-end;
+    }
+
+    .field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .field label {
+        font-size: 12px;
+        color: var(--text-dim);
+    }
+
+    select, input[type="text"], input[type="number"] {
+        background: var(--panel-alt);
+        border: 1px solid var(--border);
+        color: var(--text);
+        border-radius: 6px;
+        padding: 8px 10px;
+        font-size: 14px;
+    }
+
+    input[type="text"] { width: 130px; }
+    input[type="number"] { width: 100px; }
+
+    button {
+        background: var(--accent-strong);
+        color: #04202e;
+        border: none;
+        border-radius: 6px;
+        padding: 9px 16px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+    }
+
+    button:hover { background: var(--accent); }
+
+    button.secondary {
+        background: transparent;
+        color: var(--accent);
+        border: 1px solid var(--accent-strong);
+    }
+
+    button.secondary:hover { background: rgba(56, 189, 248, 0.1); }
+
+    button.danger {
+        background: transparent;
+        color: var(--red);
+        border: 1px solid var(--red);
+        padding: 5px 10px;
+        font-size: 12px;
+    }
+
+    button.danger:hover { background: rgba(248, 113, 113, 0.1); }
+
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+    }
+
+    th, td {
+        text-align: right;
+        padding: 8px 6px;
+        border-bottom: 1px solid var(--border);
+        white-space: nowrap;
+    }
+
+    th:first-child, td:first-child,
+    th:nth-child(2), td:nth-child(2) {
+        text-align: left;
+    }
+
+    th {
+        color: var(--text-dim);
+        font-weight: 600;
+        font-size: 12px;
+    }
+
+    td input[type="number"] {
+        width: 90px;
+        text-align: right;
+    }
+
+    .price-cell { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+    .price-note { font-size: 10px; color: var(--text-dim); }
+    .price-note.manual { color: var(--yellow); }
+    .price-note.error { color: var(--red); }
+    .price-note.prevclose { color: var(--text-dim); }
+
+    /* 取引状態ランプ: 取引時間中(REGULAR)なら緑、それ以外は赤 */
+    .state-lamp {
+        display: inline-flex;
+        align-items: center;
+        margin-top: 3px;
+        vertical-align: middle;
+    }
+
+    .state-lamp::before {
+        content: '';
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--red);
+        box-shadow: 0 0 4px var(--red);
+    }
+
+    .state-lamp.live::before {
+        background: var(--green);
+        box-shadow: 0 0 4px var(--green);
+    }
+
+    .price-change { font-size: 10px; margin-top: 2px; color: var(--text-dim); }
+    .price-change.positive { color: var(--red); }
+    .price-change.negative { color: var(--green); }
+    /* 最新でない値から算出した参考値であることを控えめに示す */
+    .price-change.stale { opacity: 0.65; font-style: italic; }
+
+    .market-badge {
+        display: inline-block;
+        font-size: 11px;
+        font-weight: 700;
+        padding: 2px 6px;
+        border-radius: 4px;
+        margin-right: 6px;
+    }
+
+    .market-badge.JP { background: rgba(74, 222, 128, 0.15); color: var(--green); }
+    .market-badge.US { background: rgba(56, 189, 248, 0.15); color: var(--accent); }
+
+    .empty-row td {
+        text-align: center;
+        color: var(--text-dim);
+        padding: 24px;
+    }
+
+    .totals {
+        display: flex;
+        gap: 24px;
+        flex-wrap: wrap;
+        margin-top: 16px;
+        padding-top: 16px;
+        border-top: 1px solid var(--border);
+    }
+
+    .totals .item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .totals .item .label {
+        font-size: 12px;
+        color: var(--text-dim);
+    }
+
+    .totals .item .value {
+        font-size: 20px;
+        font-weight: bold;
+    }
+
+    .totals .item.grand .value {
+        color: var(--accent);
+        font-size: 26px;
+    }
+
+    .totals .item .value.positive { color: var(--red); }
+    .totals .item .value.negative { color: var(--green); }
+
+    .checkpoint-note {
+        font-size: 11px;
+        color: var(--text-dim);
+        margin-top: 2px;
+    }
+
+    /* 日本株／米国株それぞれの合計に添える前日比 */
+    .group-change {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-dim);
+        margin-top: 2px;
+    }
+
+    .group-change.positive { color: var(--red); }
+    .group-change.negative { color: var(--green); }
+
+    .toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+
+    .toolbar-right {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+
+    .auto-refresh-toggle {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 13px;
+        color: var(--text-dim);
+        cursor: pointer;
+        user-select: none;
+    }
+
+    .hint {
+        font-size: 12px;
+        color: var(--text-dim);
+        margin-top: 10px;
+    }
+</style>
+</head>
+<body>
+<div class="container">
+    <h1>日本株・米国株 資産計算</h1>
+    <div class="subtitle">銘柄コードと保有株数を入力すると、現在の株価と為替レートから評価額を円で計算します。</div>
+
+    <div class="panel">
+        <h2>USD/JPY 為替レート</h2>
+        <div class="rate-row">
+            <span class="rate-value" id="rateValue">-</span>
+            <input type="number" id="rateOverride" step="0.01" placeholder="手動入力">
+            <button type="button" class="secondary" id="rateRefreshBtn">レート再取得</button>
+            <span class="rate-status" id="rateStatus"></span>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>現金・余力</h2>
+        <div class="add-form">
+            <div class="field">
+                <label for="cashJpyInput">円建て余力</label>
+                <input type="number" id="cashJpyInput" min="0" step="1" placeholder="0">
+            </div>
+            <div class="field">
+                <label for="cashUsdInput">ドル建て余力</label>
+                <input type="number" id="cashUsdInput" min="0" step="0.01" placeholder="0">
+            </div>
+        </div>
+        <div class="hint">証券口座の現金残高（買付余力）を入力すると、総資産に円換算で反映されます。ドル建てはUSD/JPYレートで円換算されます。</div>
+    </div>
+
+    <div class="panel">
+        <h2>銘柄を追加</h2>
+        <form class="add-form" id="addForm">
+            <div class="field">
+                <label for="marketSelect">市場</label>
+                <select id="marketSelect">
+                    <option value="JP">日本株</option>
+                    <option value="US">米国株</option>
+                </select>
+            </div>
+            <div class="field">
+                <label for="codeInput">銘柄コード</label>
+                <input type="text" id="codeInput" placeholder="例: 7203 / AAPL" required>
+            </div>
+            <div class="field">
+                <label for="qtyInput">保有株数</label>
+                <input type="number" id="qtyInput" min="1" step="1" value="100" required>
+            </div>
+            <button type="submit">追加</button>
+        </form>
+        <div class="hint">日本株はコードのみでOKです（内部で「.T」を付与します）。米国株はティッカーをそのまま入力してください。</div>
+    </div>
+
+    <div class="panel">
+        <div class="toolbar">
+            <h2 style="margin:0;">保有銘柄</h2>
+            <div class="toolbar-right">
+                <label class="auto-refresh-toggle">
+                    <input type="checkbox" id="autoRefreshToggle" checked>
+                    自動更新
+                </label>
+                <span class="rate-status" id="autoRefreshStatus"></span>
+                <button type="button" class="secondary" id="refreshAllBtn">すべての株価を再取得</button>
+            </div>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>市場</th>
+                    <th>コード</th>
+                    <th>保有株数</th>
+                    <th>現在値</th>
+                    <th>評価額（円）</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody id="holdingsBody">
+                <tr class="empty-row"><td colspan="6">まだ銘柄が登録されていません</td></tr>
+            </tbody>
+        </table>
+
+        <div class="totals">
+            <div class="item">
+                <div class="label">日本株 評価額</div>
+                <div class="value" id="totalJP">¥0</div>
+                <div class="group-change" id="changeJP"></div>
+            </div>
+            <div class="item">
+                <div class="label">米国株 評価額（円換算）</div>
+                <div class="value" id="totalUS">¥0</div>
+                <div class="group-change" id="changeUS"></div>
+            </div>
+            <div class="item">
+                <div class="label">現金・余力（円換算）</div>
+                <div class="value" id="totalCash">¥0</div>
+            </div>
+            <div class="item grand">
+                <div class="label">総資産</div>
+                <div class="value" id="totalGrand">¥0</div>
+            </div>
+            <div class="item">
+                <div class="label">前日比</div>
+                <div class="value" id="totalChange">-</div>
+                <div class="checkpoint-note" id="checkpointNote"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(() => {
+    'use strict';
+
+    const STORAGE_KEY = 'stockAssetCalculator.holdings.v1';
+    const CASH_STORAGE_KEY = 'stockAssetCalculator.cash.v1';
+    const RATE_CACHE_KEY = 'stockAssetCalculator.rate.v1';
+    const JST_OFFSET_MS = 9 * 60 * 60 * 1000; // 日本標準時はUTC+9固定（サマータイムなし）
+
+    // ザラ場中（取引時間中）はリアルタイムに近い値を出すため短い間隔で更新する。
+    // 全銘柄が休場中のときは、寄り付きを拾えれば十分なので間隔を長くして
+    // 無料プロキシへのリクエストを抑える。
+    const LIVE_REFRESH_MS = 60 * 1000;
+    const IDLE_REFRESH_MS = 10 * 60 * 1000;
+
+    /** @type {{id:string, market:'JP'|'US', code:string, quantity:number, price:number|null, currency:string, manual:boolean, error:string|null}[]} */
+    let holdings = loadHoldings();
+    let cash = loadCash();
+    let usdJpyRate = null;
+    let usdJpyPrevRate = null; // 前営業日終値のUSD/JPY（円換算の前日比に使う）
+    let rateIsManual = false;
+    let rateMarketState = null;
+    let autoRefreshEnabled = true;
+    let autoRefreshTimer = null;
+    let isRefreshing = false;
+
+    const holdingsBody = document.getElementById('holdingsBody');
+    const addForm = document.getElementById('addForm');
+    const rateValueEl = document.getElementById('rateValue');
+    const rateStatusEl = document.getElementById('rateStatus');
+    const rateOverrideEl = document.getElementById('rateOverride');
+    const cashJpyInputEl = document.getElementById('cashJpyInput');
+    const cashUsdInputEl = document.getElementById('cashUsdInput');
+    const totalJPEl = document.getElementById('totalJP');
+    const totalUSEl = document.getElementById('totalUS');
+    const changeJPEl = document.getElementById('changeJP');
+    const changeUSEl = document.getElementById('changeUS');
+    const totalCashEl = document.getElementById('totalCash');
+    const totalGrandEl = document.getElementById('totalGrand');
+    const totalChangeEl = document.getElementById('totalChange');
+    const checkpointNoteEl = document.getElementById('checkpointNote');
+    const autoRefreshToggleEl = document.getElementById('autoRefreshToggle');
+    const autoRefreshStatusEl = document.getElementById('autoRefreshStatus');
+
+    function loadHoldings() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            return raw ? JSON.parse(raw) : [];
+        } catch {
+            return [];
+        }
+    }
+
+    function saveHoldings() {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(holdings));
+    }
+
+    function loadCash() {
+        try {
+            const raw = localStorage.getItem(CASH_STORAGE_KEY);
+            const parsed = raw ? JSON.parse(raw) : {};
+            return { jpy: Number(parsed.jpy) || 0, usd: Number(parsed.usd) || 0 };
+        } catch {
+            return { jpy: 0, usd: 0 };
+        }
+    }
+
+    function saveCash() {
+        localStorage.setItem(CASH_STORAGE_KEY, JSON.stringify(cash));
+    }
+
+    function formatYen(n) {
+        return '¥' + Math.round(n).toLocaleString('ja-JP');
+    }
+
+    function formatTime(ts) {
+        return new Date(ts).toLocaleTimeString('ja-JP');
+    }
+
+    function escapeHtml(str) {
+        return String(str).replace(/[&<>"']/g, c => (
+            { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+        ));
+    }
+
+    function toJstWallClock(realMs) {
+        // UTC+9固定のためgetUTC*系を使って日本時間の年月日時分を取り出す
+        return new Date(realMs + JST_OFFSET_MS);
+    }
+
+    function formatJstDate(realMs) {
+        const jst = toJstWallClock(realMs);
+        return `${jst.getUTCMonth() + 1}/${jst.getUTCDate()}`;
+    }
+
+    function formatJstLabel(realMs) {
+        const jst = toJstWallClock(realMs);
+        const mm = jst.getUTCMonth() + 1;
+        const dd = jst.getUTCDate();
+        const hh = String(jst.getUTCHours()).padStart(2, '0');
+        const mi = String(jst.getUTCMinutes()).padStart(2, '0');
+        return `${mm}/${dd} ${hh}:${mi}`;
+    }
+
+    function formatChange(diff, pct) {
+        const rounded = Math.round(diff);
+        const sign = rounded > 0 ? '+' : (rounded < 0 ? '-' : '');
+        const yenStr = `${sign}¥${Math.abs(rounded).toLocaleString('ja-JP')}`;
+        const pctSign = pct > 0 ? '+' : (pct < 0 ? '' : '±');
+        const pctStr = `${pctSign}${pct.toFixed(2)}%`;
+        return `${yenStr} (${pctStr})`;
+    }
+
+    function formatPriceChange(diff, pct, currency) {
+        const sign = diff > 0 ? '+' : (diff < 0 ? '-' : '');
+        const numStr = `${sign}${Math.abs(diff).toLocaleString('ja-JP', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const pctSign = pct > 0 ? '+' : (pct < 0 ? '' : '±');
+        const pctStr = `${pctSign}${pct.toFixed(2)}%`;
+        const currencyLabel = currency ? ` ${currency}` : '';
+        return `${numStr}${currencyLabel} (${pctStr})`;
+    }
+
+    function normalizeSymbol(market, code) {
+        const trimmed = code.trim().toUpperCase();
+        if (market === 'JP') {
+            return trimmed.includes('.') ? trimmed : `${trimmed}.T`;
+        }
+        return trimmed;
+    }
+
+    // ブラウザや中継プロキシ（allorigins.win等）に古いレスポンスをキャッシュされたまま
+    // 使われ続けないよう、リクエストURLに毎回異なるパラメータを付与する
+    function withCacheBuster(url) {
+        const sep = url.includes('?') ? '&' : '?';
+        return `${url}${sep}_=${Date.now()}`;
+    }
+
+    function sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    // 死んでいる経路を長々と待たないための短めのタイムアウト。
+    // ここが長いと、候補を順に試す間に1銘柄で何十秒も溶ける。
+    const FETCH_TIMEOUT_MS = 4000;
+
+    // 生きている経路が分かっている間は1銘柄=1リクエストで済むので、
+    // 間隔はレート制限を避けられる最小限で十分。
+    const REQUEST_GAP_MS = 150;
+    let requestChain = Promise.resolve();
+    let lastRequestAt = 0;
+
+    function enqueueRequest(task) {
+        const run = requestChain.then(async () => {
+            const wait = lastRequestAt + REQUEST_GAP_MS - Date.now();
+            if (wait > 0) await sleep(wait);
+            lastRequestAt = Date.now();
+            return task();
+        });
+        // 1件の失敗で後続のキューが止まらないようにする
+        requestChain = run.then(() => {}, () => {});
+        return run;
+    }
+
+    async function fetchJsonRaw(url, timeoutMs = FETCH_TIMEOUT_MS) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const res = await fetch(withCacheBuster(url), { cache: 'no-store', signal: controller.signal });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return await res.json();
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    function fetchJson(url, timeoutMs) {
+        return enqueueRequest(() => fetchJsonRaw(url, timeoutMs));
+    }
+
+    // 無料の公開CORSプロキシは個々の可用性が低く、1つに依存すると丸ごと
+    // 止まって見える。候補を多めに持ち、生きているものを1つ見つけて使い回す。
+    // unwrap は、本文を包んで返すタイプのプロキシ用。
+    const PROXY_ROUTES = [
+        { name: '直接', build: url => url },
+        { name: 'corsproxy.io', build: url => `https://corsproxy.io/?url=${encodeURIComponent(url)}` },
+        { name: 'codetabs', build: url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}` },
+        { name: 'allorigins', build: url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}` },
+        {
+            name: 'allorigins(get)',
+            build: url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+            unwrap: data => (typeof data?.contents === 'string' ? JSON.parse(data.contents) : data),
+        },
+        { name: 'cors.lol', build: url => `https://api.cors.lol/?url=${encodeURIComponent(url)}` },
+        { name: 'cors.workers.dev', build: url => `https://test.cors.workers.dev/?${url}` },
+    ];
+
+    // 生きていると分かった経路。null は「未確定＝探索が必要」。
+    let activeRouteIndex = null;
+
+    async function fetchViaRoute(routeIndex, targetUrl) {
+        const route = PROXY_ROUTES[routeIndex];
+        const data = await fetchJson(route.build(targetUrl), FETCH_TIMEOUT_MS);
+        return route.unwrap ? route.unwrap(data) : data;
+    }
+
+    // 全経路を同時に投げて、最初に「有効な株価データ」を返したものを採用する。
+    // 順番に試すと死んだ経路のタイムアウトが積み上がって致命的に遅くなるため、
+    // 探索は並列で行い、以後は見つかった経路だけを使う。
+    async function discoverRoute(targetUrl, parse) {
+        const attempts = PROXY_ROUTES.map(async (route, index) => {
+            const raw = await fetchJsonRaw(route.build(targetUrl), FETCH_TIMEOUT_MS);
+            const data = route.unwrap ? route.unwrap(raw) : raw;
+            return { index, value: parse(data) };
+        });
+        const winner = await Promise.any(attempts);
+        activeRouteIndex = winner.index;
+        console.info(`[stockAssetCalculator] 取得経路: ${PROXY_ROUTES[winner.index].name}`);
+        return winner.value;
+    }
+
+    function activeRouteName() {
+        return activeRouteIndex === null ? null : PROXY_ROUTES[activeRouteIndex].name;
+    }
+
+    // 日足の時系列から、直近セッションの終値とその営業日を取り出す。
+    // metaのregularMarketPrice/previousCloseだけを見ていると「その値が
+    // どの営業日のものか」を判別できず、前営業日の終値を掴んでいても
+    // 気づけない。日足バーを直接読めば、値と営業日が必ず対応する。
+    function extractSessionCloses(result) {
+        const timestamps = Array.isArray(result?.timestamp) ? result.timestamp : [];
+        const closes = result?.indicators?.quote?.[0]?.close;
+        const bars = [];
+        if (Array.isArray(closes)) {
+            for (let i = 0; i < closes.length; i++) {
+                if (typeof closes[i] === 'number') {
+                    bars.push({ close: closes[i], time: typeof timestamps[i] === 'number' ? timestamps[i] : null });
+                }
+            }
+        }
+        return {
+            latest: bars.length > 0 ? bars[bars.length - 1] : null,
+            previous: bars.length > 1 ? bars[bars.length - 2] : null,
+        };
+    }
+
+    function parseQuoteMeta(data) {
+        const result = data?.chart?.result?.[0];
+        const meta = result?.meta;
+        if (!meta) throw new Error('価格データなし');
+
+        const marketState = meta.marketState || 'REGULAR';
+        const { latest: latestBar, previous: previousBar } = extractSessionCloses(result);
+
+        let price = null;
+        let priceSource = null;
+        let dataTimeSeconds = null;
+
+        if (marketState === 'REGULAR' && typeof meta.regularMarketPrice === 'number') {
+            // ザラ場中はライブ価格
+            price = meta.regularMarketPrice;
+            priceSource = 'regular';
+            dataTimeSeconds = meta.regularMarketTime ?? null;
+        } else if (marketState === 'PRE' && typeof meta.preMarketPrice === 'number') {
+            price = meta.preMarketPrice;
+            priceSource = 'pre';
+            dataTimeSeconds = meta.preMarketTime ?? null;
+        } else if ((marketState === 'POST' || marketState === 'POSTPOST') && typeof meta.postMarketPrice === 'number') {
+            price = meta.postMarketPrice;
+            priceSource = 'post';
+            dataTimeSeconds = meta.postMarketTime ?? null;
+        } else {
+            // 休場中は「直近セッションの終値」＝その日の取引が終わっていれば当日終値。
+            // 日足バーとmeta.regularMarketPriceの両方を候補にして、タイムスタンプが
+            // 新しい方を採用する（引け直後は日足バーの反映がmetaより遅れることがあり、
+            // 逆にmetaが古いまま残ることもあるため、どちらか一方に決め打ちしない）。
+            const candidates = [];
+            if (latestBar) {
+                candidates.push({ price: latestBar.close, time: latestBar.time, source: 'sessionClose' });
+            }
+            if (typeof meta.regularMarketPrice === 'number') {
+                candidates.push({ price: meta.regularMarketPrice, time: meta.regularMarketTime ?? null, source: 'regular' });
+            }
+            candidates.sort((a, b) => (b.time ?? 0) - (a.time ?? 0));
+            if (candidates.length > 0) {
+                price = candidates[0].price;
+                priceSource = candidates[0].source;
+                dataTimeSeconds = candidates[0].time;
+            }
+        }
+
+        if (typeof price !== 'number') {
+            // 上記がすべて取れなかった場合の最終手段
+            const prevClose = meta.previousClose ?? meta.chartPreviousClose;
+            if (typeof prevClose === 'number') {
+                price = prevClose;
+                priceSource = 'previousClose';
+                dataTimeSeconds = previousBar?.time ?? null;
+            }
+        }
+
+        if (typeof price !== 'number') throw new Error('価格データなし');
+
+        // dataTime はこの価格が実際にいつ時点のものかを示すYahoo側のタイム
+        // スタンプ。取得処理自体は成功しているのに値が更新されない場合、
+        // これが古いままかどうかで原因を切り分けられる。
+        const dataTime = typeof dataTimeSeconds === 'number' ? dataTimeSeconds * 1000 : null;
+
+        // 前日比の基準となる「前営業日の終値」を決める。
+        // 日足バーの最新が現在値と同じ営業日なら、その1本手前が前営業日。
+        // まだ当日のバーが立っていない（寄付前など）場合は最新バーが前営業日。
+        let prevBar = null;
+        if (latestBar) {
+            const sameDay = dataTime !== null && latestBar.time !== null
+                && formatJstDate(latestBar.time * 1000) === formatJstDate(dataTime);
+            prevBar = sameDay ? previousBar : latestBar;
+        }
+        let previousClose = prevBar?.close ?? null;
+        let previousCloseTime = prevBar?.time != null ? prevBar.time * 1000 : null;
+        if (typeof previousClose !== 'number') {
+            // 日足バーが足りない場合はmetaの前日終値を使う（日付は不明）
+            const metaPrev = meta.previousClose ?? meta.chartPreviousClose;
+            previousClose = typeof metaPrev === 'number' ? metaPrev : null;
+            previousCloseTime = null;
+        }
+
+        return {
+            price,
+            currency: meta.currency || null,
+            marketState,
+            isPreviousClose: priceSource === 'previousClose',
+            priceSource,
+            dataTime,
+            previousClose,
+            previousCloseTime,
+        };
+    }
+
+    async function fetchQuote(symbol) {
+        // プロキシはurlパラメータの値をキーにレスポンスをキャッシュすることが
+        // あるため、ラップする前のYahoo URL自体にもキャッシュバスターを付けて
+        // 「毎回別のURL」として扱わせる
+        // range/intervalを明示して日足バーを取得する。これがないと時系列が
+        // 返らず、「その終値がどの営業日のものか」を判定できない。
+        const yahooUrl = withCacheBuster(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=5d&interval=1d`);
+
+        // fetch自体は200で成功しても、中身がレート制限メッセージやエラーJSON
+        // など有効な株価データでないプロキシもある。パースまで通って初めて
+        // 「その経路は使えた」と判断する。
+
+        // 生きている経路が既に分かっていれば、それ1本だけ叩く（1銘柄=1リクエスト）。
+        if (activeRouteIndex !== null) {
+            try {
+                return parseQuoteMeta(await fetchViaRoute(activeRouteIndex, yahooUrl));
+            } catch (err) {
+                console.warn(`[stockAssetCalculator] 経路 ${activeRouteName()} が失敗 (${symbol}):`, err.message);
+                activeRouteIndex = null; // 経路が死んだので探索し直す
+            }
+        }
+
+        // 経路が未確定なら全候補を同時に投げて、最初に成功したものを採用する
+        try {
+            return await discoverRoute(
+                withCacheBuster(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=5d&interval=1d`),
+                parseQuoteMeta,
+            );
+        } catch (err) {
+            console.warn(`[stockAssetCalculator] 全経路が失敗 (${symbol})`);
+            throw new Error('株価取得に失敗しました');
+        }
+    }
+
+    async function fetchUsdJpyRate() {
+        // 為替市場のライブレート（Yahoo Financeの USD/JPY ティッカー）を優先して取得する
+        try {
+            const quote = await fetchQuote('JPY=X');
+            return {
+                rate: quote.price,
+                isPreviousClose: quote.isPreviousClose,
+                dataTime: quote.dataTime,
+                marketState: quote.marketState,
+                previousRate: quote.previousClose,
+            };
+        } catch (yahooErr) {
+            const data = await fetchJson('https://api.exchangerate-api.com/v4/latest/USD');
+            const jpy = data?.rates?.JPY;
+            if (typeof jpy !== 'number') throw new Error('レート取得に失敗しました');
+            return { rate: jpy, isPreviousClose: false, dataTime: null, marketState: null, previousRate: null };
+        }
+    }
+
+    async function refreshRate() {
+        if (rateIsManual) return;
+        rateStatusEl.textContent = '取得中...';
+        try {
+            const { rate, isPreviousClose, dataTime, marketState, previousRate } = await fetchUsdJpyRate();
+            usdJpyRate = rate;
+            usdJpyPrevRate = previousRate;
+            rateMarketState = marketState;
+            rateValueEl.textContent = `1 USD = ${usdJpyRate.toFixed(2)} 円`;
+            const dataTimeStr = dataTime ? ` / データ時刻: ${formatJstLabel(dataTime)}` : '';
+            const text = isPreviousClose
+                ? `更新: ${formatTime(Date.now())}（為替市場休止中のため前回終値）${dataTimeStr}`
+                : `更新: ${formatTime(Date.now())}${dataTimeStr}`;
+            // 取引状態は銘柄行と同じくランプのみで示す
+            rateStatusEl.innerHTML = marketState
+                ? `${escapeHtml(text)} <span class="state-lamp${marketState === 'REGULAR' ? ' live' : ''}" title="取引状態: ${escapeHtml(marketState)}"></span>`
+                : escapeHtml(text);
+            localStorage.setItem(RATE_CACHE_KEY, JSON.stringify({ rate: usdJpyRate, ts: Date.now() }));
+        } catch (err) {
+            rateStatusEl.textContent = `取得失敗（試行: ${formatTime(Date.now())}）。下の欄に手動入力してください。`;
+            const cached = loadCachedRate();
+            if (cached && usdJpyRate === null) {
+                usdJpyRate = cached.rate;
+                rateValueEl.textContent = `1 USD = ${usdJpyRate.toFixed(2)} 円（キャッシュ）`;
+            }
+        }
+        render();
+    }
+
+    function loadCachedRate() {
+        try {
+            const raw = localStorage.getItem(RATE_CACHE_KEY);
+            return raw ? JSON.parse(raw) : null;
+        } catch {
+            return null;
+        }
+    }
+
+    rateOverrideEl.addEventListener('change', () => {
+        const v = parseFloat(rateOverrideEl.value);
+        if (!isNaN(v) && v > 0) {
+            usdJpyRate = v;
+            rateIsManual = true;
+            rateValueEl.textContent = `1 USD = ${usdJpyRate.toFixed(2)} 円（手動）`;
+            rateStatusEl.textContent = '手動入力を使用中';
+            render();
+        } else if (rateOverrideEl.value.trim() === '') {
+            rateIsManual = false;
+            refreshRate();
+        }
+    });
+
+    document.getElementById('rateRefreshBtn').addEventListener('click', () => {
+        rateIsManual = false;
+        rateOverrideEl.value = '';
+        refreshRate();
+    });
+
+    async function addHolding(market, code, quantity) {
+        const holding = {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            market,
+            code: code.trim().toUpperCase(),
+            quantity,
+            price: null,
+            currency: market === 'JP' ? 'JPY' : 'USD',
+            manual: false,
+            error: null,
+        };
+        holdings.push(holding);
+        saveHoldings();
+        render();
+        await refreshHolding(holding.id);
+    }
+
+    async function refreshHolding(id) {
+        const holding = holdings.find(h => h.id === id);
+        if (!holding) return;
+        try {
+            const symbol = normalizeSymbol(holding.market, holding.code);
+            const quote = await fetchQuote(symbol);
+            const { price, currency, isPreviousClose, priceSource, marketState, dataTime } = quote;
+            holding.price = price;
+            holding.currency = currency || holding.currency;
+            holding.isPreviousClose = isPreviousClose;
+            holding.priceSource = priceSource;
+            holding.marketState = marketState;
+            holding.dataTime = dataTime;
+            holding.previousClose = quote.previousClose;
+            holding.previousCloseTime = quote.previousCloseTime;
+            holding.manual = false;
+            holding.error = null;
+            holding.lastFetchedAt = Date.now();
+        } catch (err) {
+            holding.error = err.message || '取得失敗';
+            holding.lastAttemptAt = Date.now();
+        }
+        saveHoldings();
+        render();
+    }
+
+    async function refreshAll() {
+        // Promise.allで一斉に投げると無料プロキシのレート制限に一気に引っかかり、
+        // 最初の1〜2銘柄だけ成功して残りが全滅する。1銘柄ずつ順番に取得する。
+        for (const holding of [...holdings]) {
+            await refreshHolding(holding.id);
+        }
+    }
+
+    function removeHolding(id) {
+        holdings = holdings.filter(h => h.id !== id);
+        saveHoldings();
+        render();
+    }
+
+    function setManualPrice(id, value) {
+        const holding = holdings.find(h => h.id === id);
+        if (!holding) return;
+        const v = parseFloat(value);
+        if (!isNaN(v) && v >= 0) {
+            holding.price = v;
+            holding.manual = true;
+            holding.error = null;
+            saveHoldings();
+            render();
+        }
+    }
+
+    function setQuantity(id, value) {
+        const holding = holdings.find(h => h.id === id);
+        if (!holding) return;
+        const v = parseFloat(value);
+        if (!isNaN(v) && v >= 0) {
+            holding.quantity = v;
+            saveHoldings();
+            render();
+        }
+    }
+
+    // 1株あたりの価格を円で返す。米国株は為替レートで換算する。
+    // レート未取得で換算できない場合は null。
+    function unitPriceInJpy(holding) {
+        if (holding.price === null) return null;
+        if (holding.currency === 'USD') {
+            return usdJpyRate ? holding.price * usdJpyRate : null;
+        }
+        return holding.price;
+    }
+
+    function valueInJpy(holding) {
+        const unit = unitPriceInJpy(holding);
+        return unit === null ? 0 : unit * holding.quantity;
+    }
+
+    // 前営業日終値の1株あたり円価格。米国株は前営業日終値のレートで換算する
+    // （前営業日レートが取れない場合のみ現在レートで代用する）。
+    function prevUnitPriceInJpy(holding) {
+        if (typeof holding.previousClose !== 'number') return null;
+        if (holding.currency === 'USD') {
+            const rate = usdJpyPrevRate ?? usdJpyRate;
+            return rate ? holding.previousClose * rate : null;
+        }
+        return holding.previousClose;
+    }
+
+    // 前営業日終値からの増減。円建ての金額と変化率を返す。
+    function previousDayChange(holding) {
+        const now = unitPriceInJpy(holding);
+        const prev = prevUnitPriceInJpy(holding);
+        if (now === null || prev === null || prev === 0) return null;
+        const unitDiff = now - prev;
+        return {
+            diff: unitDiff * holding.quantity,
+            pct: (unitDiff / prev) * 100,
+            unitDiff,
+            prevValue: prev * holding.quantity,
+        };
+    }
+
+    function render() {
+        if (holdings.length === 0) {
+            holdingsBody.innerHTML = '<tr class="empty-row"><td colspan="6">まだ銘柄が登録されていません</td></tr>';
+        } else {
+            holdingsBody.innerHTML = holdings.map(h => {
+                const jpyValue = valueInJpy(h);
+                const priceLabel = h.price !== null
+                    ? `${h.price.toLocaleString('ja-JP', { maximumFractionDigits: 2 })} ${h.currency || ''}`
+                    : '-';
+                let note = '';
+                if (h.manual) note = `<div class="price-note manual">手動入力</div>`;
+                else if (h.priceSource === 'pre') note = `<div class="price-note prevclose">寄付前気配値</div>`;
+                else if (h.priceSource === 'post') note = `<div class="price-note prevclose">時間外気配値</div>`;
+                else if (h.isPreviousClose) note = `<div class="price-note prevclose">前日終値（推定）</div>`;
+                else if (h.priceSource === 'sessionClose' || (h.marketState && h.marketState !== 'REGULAR')) {
+                    // どの営業日の終値なのかを日付付きで明示する
+                    const closeDate = h.dataTime ? `（${formatJstDate(h.dataTime)}）` : '';
+                    note = `<div class="price-note prevclose">休場中・終値${closeDate}</div>`;
+                }
+
+                // 取引状態はランプのみで示す。取引時間中(REGULAR)なら緑、それ以外は赤。
+                // 状態名はツールチップで確認できる。
+                const isLive = h.marketState === 'REGULAR';
+                const stateNote = h.marketState
+                    ? `<div class="state-lamp${isLive ? ' live' : ''}" title="取引状態: ${escapeHtml(h.marketState)}"></div>`
+                    : '';
+
+                // 実際に取得処理が動いているかを確認できるよう、最終取得/試行時刻を出す。
+                // 「最終取得」（＝リクエストした時刻）が更新され続けているのに「データ時刻」
+                // （＝返ってきた価格が実際にいつ時点のものか）が変わらない場合、取得先
+                // （Yahoo/プロキシ）側で古いレスポンスが返され続けていることが分かる。
+                let fetchedNote = '';
+                if (h.error && h.lastAttemptAt) {
+                    // 取得できていないときは、欄に残っている数値が前回取得できた
+                    // ときの値であることが分かるようにしておく
+                    const staleStr = h.lastFetchedAt
+                        ? `前回取得: ${formatTime(h.lastFetchedAt)} / `
+                        : '';
+                    fetchedNote = `<div class="price-note">${staleStr}最終試行: ${formatTime(h.lastAttemptAt)}</div>`;
+                } else if (h.lastFetchedAt) {
+                    const dataTimeStr = h.dataTime ? ` / データ時刻: ${formatJstLabel(h.dataTime)}` : '';
+                    fetchedNote = `<div class="price-note">最終取得: ${formatTime(h.lastFetchedAt)}${dataTimeStr}</div>`;
+                }
+
+                // 前日比＝前営業日の終値からの増減。日足データに含まれる前営業日
+                // の終値をそのまま基準にするので、画面をいつ開いていたかに左右され
+                // ない。米国株は前営業日終値のレートで円換算した値と比較するため、
+                // 株価の動きと為替の動きの両方が円建ての増減に反映される。
+                let changeHtml = '';
+                const change = previousDayChange(h);
+                if (change) {
+                    const cls = change.diff > 0 ? 'positive' : (change.diff < 0 ? 'negative' : '');
+                    const isLiveValue = !h.error && !h.manual;
+                    const staleCls = isLiveValue ? '' : ' stale';
+                    const baseLabel = h.previousCloseTime
+                        ? `${formatJstDate(h.previousCloseTime)}の終値`
+                        : '前営業日終値';
+                    const unitLabel = formatPriceChange(change.unitDiff, change.pct, 'JPY');
+                    const staleTitle = isLiveValue ? '' : ' ※現在値が最新でないため参考値';
+                    const title = `基準: ${baseLabel} / 1株あたり ${unitLabel}${staleTitle}`;
+                    const suffix = isLiveValue ? '' : ' ※参考';
+                    changeHtml = `<div class="price-change ${cls}${staleCls}" title="${title}">${formatChange(change.diff, change.pct)}${suffix}</div>`;
+                } else if (h.price !== null) {
+                    changeHtml = `<div class="price-change stale" title="前営業日の終値が取得できていません">前日比 —</div>`;
+                }
+
+                return `
+                <tr data-id="${h.id}">
+                    <td><span class="market-badge ${h.market}">${h.market === 'JP' ? '日本' : '米国'}</span></td>
+                    <td>${h.code}</td>
+                    <td><input type="number" class="qty-input" value="${h.quantity}" min="0" step="1"></td>
+                    <td>
+                        <div class="price-cell">
+                            <input type="number" class="price-input" value="${h.price !== null ? h.price : ''}" min="0" step="0.01" placeholder="${priceLabel === '-' ? '未取得' : ''}">
+                            ${note}
+                            ${changeHtml}
+                            ${fetchedNote}
+                            ${stateNote}
+                        </div>
+                    </td>
+                    <td>${formatYen(jpyValue)}</td>
+                    <td><button type="button" class="danger remove-btn">削除</button></td>
+                </tr>`;
+            }).join('');
+        }
+
+        // 銘柄群の現在評価額と前営業日評価額をまとめて集計する。
+        // 前営業日終値が不明な銘柄は増減なしとみなして両方に同額を積む。
+        function summarize(list) {
+            let current = 0, previous = 0, knownCount = 0;
+            for (const h of list) {
+                const value = valueInJpy(h);
+                const change = previousDayChange(h);
+                current += value;
+                if (change) {
+                    previous += change.prevValue;
+                    knownCount++;
+                } else {
+                    previous += value;
+                }
+            }
+            return { current, previous, knownCount, total: list.length };
+        }
+
+        const jp = summarize(holdings.filter(h => h.market === 'JP'));
+        const us = summarize(holdings.filter(h => h.market !== 'JP'));
+
+        const prevRate = usdJpyPrevRate ?? usdJpyRate;
+        const totalCash = cash.jpy + (usdJpyRate ? cash.usd * usdJpyRate : 0);
+        const prevCash = cash.jpy + (prevRate ? cash.usd * prevRate : 0);
+
+        const totalGrand = jp.current + us.current + totalCash;
+        const prevTotal = jp.previous + us.previous + prevCash;
+
+        totalJPEl.textContent = formatYen(jp.current);
+        totalUSEl.textContent = formatYen(us.current);
+        totalCashEl.textContent = formatYen(totalCash);
+        totalGrandEl.textContent = formatYen(totalGrand);
+
+        // 日本株・米国株それぞれの合計にも同じ基準（前営業日終値）で前日比を出す
+        function renderGroupChange(el, group) {
+            if (group.total === 0) {
+                el.textContent = '';
+                el.classList.remove('positive', 'negative');
+                return;
+            }
+            if (group.knownCount === 0 || group.previous <= 0) {
+                el.textContent = '前日比 —';
+                el.classList.remove('positive', 'negative');
+                return;
+            }
+            const diff = group.current - group.previous;
+            const pct = (diff / group.previous) * 100;
+            const partial = group.knownCount < group.total
+                ? `（${group.total - group.knownCount}銘柄は前営業日終値が未取得）`
+                : '';
+            el.textContent = `${formatChange(diff, pct)}${partial}`;
+            el.classList.toggle('positive', diff > 0);
+            el.classList.toggle('negative', diff < 0);
+        }
+
+        renderGroupChange(changeJPEl, jp);
+        renderGroupChange(changeUSEl, us);
+
+        // 総資産の前日比＝各銘柄の前営業日終値による評価額の合計との差。
+        // 円建て現金は前日比に影響しないが、ドル建て現金は為替の変動分だけ動く。
+        const prevKnownCount = jp.knownCount + us.knownCount;
+
+        if (totalGrand > 0 && prevTotal > 0 && (holdings.length === 0 || prevKnownCount > 0)) {
+            const diff = totalGrand - prevTotal;
+            const pct = (diff / prevTotal) * 100;
+            totalChangeEl.textContent = formatChange(diff, pct);
+            totalChangeEl.classList.toggle('positive', diff > 0);
+            totalChangeEl.classList.toggle('negative', diff < 0);
+            const partial = prevKnownCount < holdings.length
+                ? `（${holdings.length - prevKnownCount}銘柄は前営業日終値が未取得）`
+                : '';
+            checkpointNoteEl.textContent = `基準: 前営業日の終値${partial}`;
+        } else if (totalGrand > 0) {
+            totalChangeEl.textContent = '—';
+            totalChangeEl.classList.remove('positive', 'negative');
+            checkpointNoteEl.textContent = '前営業日の終値を取得中';
+        } else {
+            totalChangeEl.textContent = '-';
+            totalChangeEl.classList.remove('positive', 'negative');
+            checkpointNoteEl.textContent = '';
+        }
+
+        holdingsBody.querySelectorAll('tr[data-id]').forEach(row => {
+            const id = row.getAttribute('data-id');
+            row.querySelector('.remove-btn').addEventListener('click', () => removeHolding(id));
+            row.querySelector('.qty-input').addEventListener('change', (e) => setQuantity(id, e.target.value));
+            row.querySelector('.price-input').addEventListener('change', (e) => setManualPrice(id, e.target.value));
+        });
+    }
+
+    addForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const market = document.getElementById('marketSelect').value;
+        const code = document.getElementById('codeInput').value;
+        const quantity = parseFloat(document.getElementById('qtyInput').value);
+        if (!code.trim() || isNaN(quantity) || quantity <= 0) return;
+        addHolding(market, code, quantity);
+        document.getElementById('codeInput').value = '';
+    });
+
+    document.getElementById('refreshAllBtn').addEventListener('click', () => {
+        // 手動更新した直後にまた自動更新が走らないよう、間隔を測り直す
+        runAutoRefresh().then(scheduleAutoRefresh);
+    });
+
+    cashJpyInputEl.addEventListener('change', () => {
+        const v = parseFloat(cashJpyInputEl.value);
+        cash.jpy = isNaN(v) || v < 0 ? 0 : v;
+        saveCash();
+        render();
+    });
+
+    cashUsdInputEl.addEventListener('change', () => {
+        const v = parseFloat(cashUsdInputEl.value);
+        cash.usd = isNaN(v) || v < 0 ? 0 : v;
+        saveCash();
+        render();
+    });
+
+    // --- ザラ場中の自動更新 ---
+
+    // 保有銘柄または為替のいずれかが取引時間中（REGULAR）かどうか。
+    // 気配値が動くPRE/POSTも「値が動く時間帯」として扱う。
+    function isAnyMarketLive() {
+        const liveStates = ['REGULAR', 'PRE', 'POST', 'POSTPOST'];
+        if (holdings.some(h => liveStates.includes(h.marketState))) return true;
+        return liveStates.includes(rateMarketState);
+    }
+
+    function currentRefreshInterval() {
+        return isAnyMarketLive() ? LIVE_REFRESH_MS : IDLE_REFRESH_MS;
+    }
+
+    function updateAutoRefreshStatus(nextRunAt) {
+        if (!autoRefreshEnabled) {
+            autoRefreshStatusEl.textContent = '自動更新オフ';
+            return;
+        }
+        const intervalLabel = isAnyMarketLive()
+            ? `${Math.round(LIVE_REFRESH_MS / 1000)}秒ごと（ザラ場中）`
+            : `${Math.round(IDLE_REFRESH_MS / 60000)}分ごと（休場中）`;
+        const nextLabel = nextRunAt ? ` / 次回 ${formatTime(nextRunAt)}` : '';
+        const routeLabel = activeRouteName() ? ` / 経路 ${activeRouteName()}` : '';
+        autoRefreshStatusEl.textContent = `${intervalLabel}${nextLabel}${routeLabel}`;
+    }
+
+    async function runAutoRefresh() {
+        // 前回の取得がまだ終わっていない場合は重ねて走らせない
+        if (isRefreshing) return;
+        isRefreshing = true;
+        try {
+            await refreshRate();
+            await refreshAll();
+        } finally {
+            isRefreshing = false;
+        }
+    }
+
+    function scheduleAutoRefresh() {
+        clearTimeout(autoRefreshTimer);
+        if (!autoRefreshEnabled) {
+            updateAutoRefreshStatus(null);
+            return;
+        }
+        const interval = currentRefreshInterval();
+        const nextRunAt = Date.now() + interval;
+        updateAutoRefreshStatus(nextRunAt);
+        autoRefreshTimer = setTimeout(async () => {
+            // 非表示タブでは無料プロキシへの無駄なリクエストを避けて待機する
+            // （再表示時にすぐ取得し直す）
+            if (!document.hidden) await runAutoRefresh();
+            scheduleAutoRefresh();
+        }, interval);
+    }
+
+    autoRefreshToggleEl.addEventListener('change', () => {
+        autoRefreshEnabled = autoRefreshToggleEl.checked;
+        if (autoRefreshEnabled) {
+            runAutoRefresh().then(scheduleAutoRefresh);
+        } else {
+            clearTimeout(autoRefreshTimer);
+            updateAutoRefreshStatus(null);
+        }
+    });
+
+    // タブに戻ってきたら、待機中の間隔を待たずに最新値を取り直す
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && autoRefreshEnabled) {
+            runAutoRefresh().then(scheduleAutoRefresh);
+        }
+    });
+
+    (async function init() {
+        cashJpyInputEl.value = cash.jpy || '';
+        cashUsdInputEl.value = cash.usd || '';
+        autoRefreshEnabled = autoRefreshToggleEl.checked;
+        render();
+        await runAutoRefresh();
+        scheduleAutoRefresh();
+    })();
+})();
+</script>
+</body>
+</html>
