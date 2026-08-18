@@ -242,6 +242,17 @@
         margin-top: 2px;
     }
 
+    /* 日本株／米国株それぞれの合計に添える前日比 */
+    .group-change {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-dim);
+        margin-top: 2px;
+    }
+
+    .group-change.positive { color: var(--red); }
+    .group-change.negative { color: var(--green); }
+
     .toolbar {
         display: flex;
         justify-content: space-between;
@@ -360,10 +371,12 @@
             <div class="item">
                 <div class="label">日本株 評価額</div>
                 <div class="value" id="totalJP">¥0</div>
+                <div class="group-change" id="changeJP"></div>
             </div>
             <div class="item">
                 <div class="label">米国株 評価額（円換算）</div>
                 <div class="value" id="totalUS">¥0</div>
+                <div class="group-change" id="changeUS"></div>
             </div>
             <div class="item">
                 <div class="label">現金・余力（円換算）</div>
@@ -417,6 +430,8 @@
     const cashUsdInputEl = document.getElementById('cashUsdInput');
     const totalJPEl = document.getElementById('totalJP');
     const totalUSEl = document.getElementById('totalUS');
+    const changeJPEl = document.getElementById('changeJP');
+    const changeUSEl = document.getElementById('changeUS');
     const totalCashEl = document.getElementById('totalCash');
     const totalGrandEl = document.getElementById('totalGrand');
     const totalChangeEl = document.getElementById('totalChange');
@@ -1024,34 +1039,67 @@
             }).join('');
         }
 
-        let totalJP = 0, totalUS = 0;
-        for (const h of holdings) {
-            const v = valueInJpy(h);
-            if (h.market === 'JP') totalJP += v;
-            else totalUS += v;
+        // 銘柄群の現在評価額と前営業日評価額をまとめて集計する。
+        // 前営業日終値が不明な銘柄は増減なしとみなして両方に同額を積む。
+        function summarize(list) {
+            let current = 0, previous = 0, knownCount = 0;
+            for (const h of list) {
+                const value = valueInJpy(h);
+                const change = previousDayChange(h);
+                current += value;
+                if (change) {
+                    previous += change.prevValue;
+                    knownCount++;
+                } else {
+                    previous += value;
+                }
+            }
+            return { current, previous, knownCount, total: list.length };
         }
+
+        const jp = summarize(holdings.filter(h => h.market === 'JP'));
+        const us = summarize(holdings.filter(h => h.market !== 'JP'));
+
+        const prevRate = usdJpyPrevRate ?? usdJpyRate;
         const totalCash = cash.jpy + (usdJpyRate ? cash.usd * usdJpyRate : 0);
-        const totalGrand = totalJP + totalUS + totalCash;
-        totalJPEl.textContent = formatYen(totalJP);
-        totalUSEl.textContent = formatYen(totalUS);
+        const prevCash = cash.jpy + (prevRate ? cash.usd * prevRate : 0);
+
+        const totalGrand = jp.current + us.current + totalCash;
+        const prevTotal = jp.previous + us.previous + prevCash;
+
+        totalJPEl.textContent = formatYen(jp.current);
+        totalUSEl.textContent = formatYen(us.current);
         totalCashEl.textContent = formatYen(totalCash);
         totalGrandEl.textContent = formatYen(totalGrand);
 
+        // 日本株・米国株それぞれの合計にも同じ基準（前営業日終値）で前日比を出す
+        function renderGroupChange(el, group) {
+            if (group.total === 0) {
+                el.textContent = '';
+                el.classList.remove('positive', 'negative');
+                return;
+            }
+            if (group.knownCount === 0 || group.previous <= 0) {
+                el.textContent = '前日比 —';
+                el.classList.remove('positive', 'negative');
+                return;
+            }
+            const diff = group.current - group.previous;
+            const pct = (diff / group.previous) * 100;
+            const partial = group.knownCount < group.total
+                ? `（${group.total - group.knownCount}銘柄は前営業日終値が未取得）`
+                : '';
+            el.textContent = `${formatChange(diff, pct)}${partial}`;
+            el.classList.toggle('positive', diff > 0);
+            el.classList.toggle('negative', diff < 0);
+        }
+
+        renderGroupChange(changeJPEl, jp);
+        renderGroupChange(changeUSEl, us);
+
         // 総資産の前日比＝各銘柄の前営業日終値による評価額の合計との差。
         // 円建て現金は前日比に影響しないが、ドル建て現金は為替の変動分だけ動く。
-        let prevTotal = 0;
-        let prevKnownCount = 0;
-        for (const h of holdings) {
-            const change = previousDayChange(h);
-            if (change) {
-                prevTotal += change.prevValue;
-                prevKnownCount++;
-            } else {
-                // 前営業日終値が不明な銘柄は、増減なしとみなして合計に含める
-                prevTotal += valueInJpy(h);
-            }
-        }
-        prevTotal += cash.jpy + ((usdJpyPrevRate ?? usdJpyRate) ? cash.usd * (usdJpyPrevRate ?? usdJpyRate) : 0);
+        const prevKnownCount = jp.knownCount + us.knownCount;
 
         if (totalGrand > 0 && prevTotal > 0 && (holdings.length === 0 || prevKnownCount > 0)) {
             const diff = totalGrand - prevTotal;
